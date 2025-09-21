@@ -203,6 +203,69 @@ class RealMovingBotManager:
         self.procs.clear()
 
 class EnhancedPerformanceTester(PerformanceTester):
+    async def run_world_only(self, chunk_count: int) -> Dict:
+        print("\n🌍 World‑gen only")
+        print(f"   Target chunks: {chunk_count}")
+        start = time.time()
+        world_results = self.test_world_generation(chunk_count)
+        end = time.time()
+
+        print("\n📈 World‑gen summary")
+        print(f"   Total chunks     : {world_results['total_chunks']}")
+        print(f"   Total time (s)   : {world_results['total_time']:.2f}")
+        print(f"   Chunks / second  : {world_results['chunks_per_second']:.2f}")
+        print(f"   Avg time/chunk s : {world_results['avg_time_per_chunk']:.4f}")
+
+        return {
+            "scenario": "world_only",
+            "config": {
+                "player_count": 0,
+                "duration_minutes": 0,
+                "world_gen_chunks": chunk_count,
+                "entity_spawn_rate": "none",
+                "description": f"world_only {chunk_count}"
+            },
+            "bot_mode": "none",
+            "start_time": datetime.now().isoformat(),
+            "total_duration_seconds": end - start,
+            "connected_bots": 0,
+            "is_unlimited": False,
+            "tps_stats": {"average": 0, "minimum": 0, "maximum": 0, "total_readings": 0},
+            "world_gen_results": world_results,
+            "entity_results": {"spawn_rate": "none", "total_entities": 0, "entities_per_second": 0, "total_time": 0}
+        }
+
+    async def run_entity_only(self, rate: str) -> Dict:
+        print("\n🐄 Entity only")
+        print(f"   Spawn rate: {rate}")
+        start = time.time()
+        entity_results = self.test_entities(rate)
+        end = time.time()
+
+        print("\n📈 Entity summary")
+        print(f"   Total entities   : {entity_results['total_entities']}")
+        print(f"   Total time (s)   : {entity_results['total_time']:.2f}")
+        print(f"   Entities/second  : {entity_results['entities_per_second']:.2f}")
+
+        return {
+            "scenario": "entity_only",
+            "config": {
+                "player_count": 0,
+                "duration_minutes": 0,
+                "world_gen_chunks": 0,
+                "entity_spawn_rate": rate,
+                "description": f"entity_only {rate}"
+            },
+            "bot_mode": "none",
+            "start_time": datetime.now().isoformat(),
+            "total_duration_seconds": end - start,
+            "connected_bots": 0,
+            "is_unlimited": False,
+            "tps_stats": {"average": 0, "minimum": 0, "maximum": 0, "total_readings": 0},
+            "world_gen_results": {"total_chunks": 0, "chunks_per_second": 0, "total_time": 0, "avg_time_per_chunk": 0},
+            "entity_results": entity_results
+        }
+
     async def run_test(self, scenario_name: str, config: Dict, is_unlimited=False) -> Dict:
         print(f"\n🚀 RUNNING: {scenario_name.upper()}")
         print(f"   {config['description']}")
@@ -399,9 +462,11 @@ async def main():
             print(f"  {len(keys)+1}. custom")
             print(f"  {len(keys)+2}. unlimited")
             print(f"  {len(keys)+3}. multiple")
+            print(f"  {len(keys)+4}. world-gen only")
+            print(f"  {len(keys)+5}. entity only")
             print("  0. exit")
 
-            ch = input(f"\nSelect (0-{len(keys)+3}): ").strip()
+            ch = input(f"\nSelect (0-{len(keys)+5}): ").strip()
             if ch == '0':
                 break
 
@@ -454,12 +519,33 @@ async def main():
                     if i < len(pick) - 1:
                         print("\n⏳ Waiting 15 seconds before next test...")
                         await asyncio.sleep(15)
+
+            elif int(ch) == len(keys) + 4:
+                wc = int(input("world_gen_chunks: ") or "50")
+                res = await tester.run_world_only(wc)
+                allr.append(res)
+
+            elif int(ch) == len(keys) + 5:
+                er = input("entity rate (low/medium/high): ").strip() or "medium"
+                res = await tester.run_entity_only(er)
+                allr.append(res)
+
             else:
                 continue
 
             if allr:
+                print("\n=== RUN SUMMARY ===")
+                for r in allr:
+                    if r['scenario'] == 'world_only':
+                        w = r['world_gen_results']
+                        print(f"  World‑gen only | chunks: {w['total_chunks']} | {w['chunks_per_second']:.2f} c/s | {w['avg_time_per_chunk']:.4f} s/chunk")
+                    elif r['scenario'] == 'entity_only':
+                        e = r['entity_results']
+                        print(f"  Entity only    | entities: {e['total_entities']} | {e['entities_per_second']:.2f} e/s | time: {e['total_time']:.2f}s")
+                    else:
+                        print(f"  {r['scenario']} | TPS avg: {r['tps_stats']['average']:.1f} | world: {r['world_gen_results']['chunks_per_second']:.1f} c/s | entity: {r['entity_results']['entities_per_second']:.1f} e/s")
                 tester.save_results(allr)
-                print("\nDone. Press Enter...")
+                print("\nFiles written to results/ (CSV + JSON). Press Enter...")
                 input()
 
         except (KeyboardInterrupt, EOFError):
