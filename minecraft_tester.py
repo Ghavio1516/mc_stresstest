@@ -4,6 +4,7 @@ import time
 import statistics
 import csv
 import os
+import glob
 import socket
 import threading
 import subprocess
@@ -160,7 +161,7 @@ class RealMovingBotManager:
         name = f"{self.prefix}{idx}"
         return name[:16]
 
-    def spawn(self, count: int, delay_sec: float = 3.0):
+    def spawn(self, count: int, delay_sec: float = 6.0):
         ok = 0
         for i in range(count):
             name = self._seq_name(i + 1)
@@ -398,6 +399,47 @@ class EnhancedPerformanceTester(PerformanceTester):
             "entity_results": entity_results
         }
 
+    def collect_bot_stats(self, timestamp: str):
+        os.makedirs("results/bot_stats", exist_ok=True)
+        files = glob.glob(os.path.join("results", "bot_stats", "*.json"))
+        stats = []
+        for fp in files:
+            try:
+                with open(fp, "r", encoding="utf-8") as f:
+                    s = json.load(f)
+                    start = float(s.get("startTime") or 0)
+                    end = float(s.get("endTime") or start)
+                    uptime = (end - start) / 1000.0 if end and start else 0.0
+                    stats.append({
+                        "username": s.get("username"),
+                        "distance2d": float(s.get("distance2D", 0)),
+                        "unique_chunks": int(s.get("uniqueChunks", 0)),
+                        "stuck": int(s.get("stuckCount", 0)),
+                        "recover_climb": int(s.get("recoverClimb", 0)),
+                        "recover_dig": int(s.get("recoverDig", 0)),
+                        "goals": int(s.get("goalsReached", 0)),
+                        "new_chunks": int(s.get("newChunksReached", 0)),
+                        "uptime_s": float(uptime)
+                    })
+            except Exception:
+                pass
+
+        if not stats:
+            print("No per-bot stats found in results/bot_stats")
+            return None
+
+        csv_path = os.path.join("results", f"bot_stats_summary_{timestamp}.csv")
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["username","distance2d","unique_chunks","stuck","recover_climb","recover_dig","goals","new_chunks","uptime_s"])
+            for s in stats:
+                w.writerow([s["username"], f"{s['distance2d']:.2f}", s["unique_chunks"], s["stuck"], s["recover_climb"], s["recover_dig"], s["goals"], s["new_chunks"], f"{s['uptime_s']:.1f}"])
+
+        print("\n🧭 Per-bot summary")
+        for s in stats:
+            print(f"  {s['username']}: dist {s['distance2d']:.1f}, chunks {s['unique_chunks']}, stuck {s['stuck']} (climb {s['recover_climb']}/dig {s['recover_dig']}), goals {s['goals']}, new {s['new_chunks']}, uptime {s['uptime_s']:.0f}s")
+        return csv_path
+
     def save_results(self, results: List[Dict]):
         os.makedirs("results", exist_ok=True)
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -432,6 +474,13 @@ class EnhancedPerformanceTester(PerformanceTester):
         print(f"\n💾 Results saved:")
         print(f"   📊 Summary: {csvf}")
         print(f"   📋 Details: {jsonf}")
+
+        try:
+            bot_csv = self.collect_bot_stats(ts)
+            if bot_csv:
+                print(f"\n🧾 Bot stats summary: {bot_csv}")
+        except Exception as e:
+            print(f"\n⚠️ Failed to collect bot stats: {e}")
 
 def build_tester(cfg):
     return EnhancedPerformanceTester(cfg)
