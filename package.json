@@ -1,0 +1,15 @@
+{
+  "name": "mc_stresstest",
+  "version": "1.0.0",
+  "main": "wander_bot.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "mineflayer": "4.23",
+    "mineflayer-pathfinder": "^2.4.5"
+  }
+}
