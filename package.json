@@ -9,7 +9,11 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "mineflayer": "4.23",
-    "mineflayer-pathfinder": "^2.4.5"
+    "minecraft-data": "^3.98.0",
+    "minecraft-protocol": "^1.62.0",
+    "mineflayer": "^4.33.0",
+    "mineflayer-pathfinder": "^2.4.5",
+    "prismarine-auth": "^2.7.0",
+    "prismarine-chat": "^1.12.0"
   }
 }
