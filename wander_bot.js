@@ -6,24 +6,36 @@ const { pathfinder, Movements, goals } = require('mineflayer-pathfinder')
 const { GoalNear } = goals
 
 const CHUNK_SIZE = 16
-const RING_MAX = 16
-const SAMPLES_PER_RING = 8
+const RING_MAX = 20
+const SAMPLES_PER_RING = 10
 const GOAL_TOLERANCE = 2
 const TIMEOUT_MS = 45000
 const STUCK_CHECK_MS = 8000
 const STUCK_MIN_MOVE = 2.0
 const CHAT_COOLDOWN_MS = 4000
+const MIN_SEPARATION = 48
+const REPEL_WEIGHT = 32
+const NAME_PREFIX = 'W_'
 
 function arg(name, def) {
   const i = process.argv.indexOf('--' + name)
   return i > -1 ? process.argv[i + 1] : def
 }
 
-function randomName(prefix = 'W_') {
+function randomName(prefix = NAME_PREFIX) {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_'
   let base = ''
   while (base.length < 12) base += chars[Math.floor(Math.random() * chars.length)]
   return (prefix + base).slice(0, 16)
+}
+
+function hashAngle(str) {
+  let h = 2166136261 >>> 0
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i)
+    h = Math.imul(h, 16777619)
+  }
+  return (h / 0xffffffff) * Math.PI * 2
 }
 
 const usernameArg = arg('username', '')
@@ -33,19 +45,8 @@ const bot = mineflayer.createBot({
   port: parseInt(arg('port', '25565'), 10),
   username: usernameArg && usernameArg.length >= 3 ? usernameArg : randomName(),
   auth: 'offline',
-  version: '1.21.1',
-  
+  version: '1.21.1'
 })
-
-function disableMineflayerChatParsing() {
-  const c = bot._client
-  const evs = ['chat', 'system_chat', 'player_chat', 'disguised_chat', 'profileless_chat']
-  for (const ev of evs) {
-    if (c.listenerCount(ev)) c.removeAllListeners(ev)
-    c.on(ev, () => {})
-  }
-}
-disableMineflayerChatParsing()
 
 bot.loadPlugin(pathfinder)
 bot.setMaxListeners(50)
@@ -91,13 +92,36 @@ function findFrontierOutward(startRing = 8, maxRing = RING_MAX * 2) {
   if (!spawnChunk || outwardBearing === null) return findFrontierGeneric()
   const y = bot.entity.position.y
   for (let r = startRing; r <= maxRing; r++) {
-    const jitter = (Math.random() - 0.5) * (Math.PI / 12)
+    const jitter = (Math.random() - 0.5) * (Math.PI / 10)
     const ang = outwardBearing + jitter
     const tx = spawnChunk.cx + Math.round(r * Math.cos(ang))
     const tz = spawnChunk.cz + Math.round(r * Math.sin(ang))
     if (!visited.has(chunkKey(tx, tz))) return { target: chunkCenter(tx, tz, y), chunk: { tx, tz } }
   }
   return findFrontierGeneric()
+}
+
+function planarDist(a, b) { const dx = a.x - b.x, dz = a.z - b.z; return Math.sqrt(dx * dx + dz * dz) }
+
+function separationOffset() {
+  const me = bot.entity?.position
+  if (!me) return { ox: 0, oz: 0 }
+  let ox = 0, oz = 0
+  for (const [name, info] of Object.entries(bot.players)) {
+    if (!info?.entity) continue
+    if (name === bot.username) continue
+    if (!name.startsWith(NAME_PREFIX)) continue
+    const p = info.entity.position
+    const dx = me.x - p.x
+    const dz = me.z - p.z
+    const d = Math.sqrt(dx * dx + dz * dz)
+    if (d > 0 && d < MIN_SEPARATION) {
+      const k = (MIN_SEPARATION - d) / MIN_SEPARATION
+      ox += (dx / d) * REPEL_WEIGHT * k
+      oz += (dz / d) * REPEL_WEIGHT * k
+    }
+  }
+  return { ox, oz }
 }
 
 async function gotoWithTimeout(pos, announce = '') {
@@ -117,12 +141,11 @@ async function gotoWithTimeout(pos, announce = '') {
   })
 }
 
-function planarDist(a, b) { const dx = a.x - b.x, dz = a.z - b.z; return Math.sqrt(dx * dx + dz * dz) }
-
 async function trySurfaceRecovery() {
   const mcData = require('minecraft-data')(bot.version)
   const m = new Movements(bot, mcData)
   m.allow1by1towers = true
+  m.allowParkour = true
   m.canDig = false
   bot.pathfinder.setMovements(m)
 
@@ -151,9 +174,14 @@ async function trySurfaceRecovery() {
 }
 
 async function initialOutwardScatter() {
-  const cur = spawnPos.clone()
-  const radius = 200 + Math.random() * 200
-  const target = { x: cur.x + Math.cos(outwardBearing) * radius, y: cur.y, z: cur.z + Math.sin(outwardBearing) * radius }
+  const base = spawnPos.clone()
+  const radius = 220 + Math.random() * 260
+  const { ox, oz } = separationOffset()
+  const target = {
+    x: base.x + Math.cos(outwardBearing) * radius + ox,
+    y: base.y,
+    z: base.z + Math.sin(outwardBearing) * radius + oz
+  }
   chatThrottled(`i just got here, heading to ${Math.round(target.x)}, ${Math.round(target.z)}`)
   await gotoWithTimeout(target)
 }
@@ -183,42 +211,42 @@ async function exploreLoop() {
       const cand = findFrontierOutward()
       if (!cand) {
         const p = bot.entity.position
-        const far = { x: p.x + (Math.random() * 2 - 1) * 256, y: p.y, z: p.z + (Math.random() * 2 - 1) * 256 }
+        const { ox, oz } = separationOffset()
+        const far = { x: p.x + (Math.random() * 2 - 1) * 256 + ox, y: p.y, z: p.z + (Math.random() * 2 - 1) * 256 + oz }
         await gotoWithTimeout(far, `no frontier found, going to ${Math.round(far.x)}, ${Math.round(far.z)}`)
       } else {
-        const msg = `im going to new chunk at ${Math.round(cand.target.x)}, ${Math.round(cand.target.z)}`
-        const ok = await gotoWithTimeout(cand.target, msg)
+        const { ox, oz } = separationOffset()
+        const t = { x: cand.target.x + ox, y: cand.target.y, z: cand.target.z + oz }
+        const msg = `im going to new chunk at ${Math.round(t.x)}, ${Math.round(t.z)}`
+        const ok = await gotoWithTimeout(t, msg)
         if (ok) visited.add(chunkKey(cand.chunk.tx, cand.chunk.tz))
       }
-      await new Promise((r) => setTimeout(r, 1200))
+      await new Promise((r) => setTimeout(r, 1000))
     } catch {
-      await new Promise((r) => setTimeout(r, 2000))
+      await new Promise((r) => setTimeout(r, 1800))
     }
   }
 }
 
 function scheduleReconnect(ms) { setTimeout(() => process.exit(2), ms) }
 
-let readyForChat = false
 bot.once('spawn', async () => {
   const mcData = require('minecraft-data')(bot.version)
   const moves = new Movements(bot, mcData)
   moves.allow1by1towers = true
+  moves.allowParkour = true
   moves.canDig = false
   bot.pathfinder.setMovements(moves)
 
   spawnPos = bot.entity.position.clone()
   spawnChunk = { cx: Math.floor(spawnPos.x / CHUNK_SIZE), cz: Math.floor(spawnPos.z / CHUNK_SIZE) }
-  outwardBearing = Math.random() * Math.PI * 2
-  readyForChat = true
+  outwardBearing = hashAngle(bot.username)
 
-  await new Promise((r) => setTimeout(r, 1200))
+  await new Promise((r) => setTimeout(r, 1000))
   await initialOutwardScatter()
   await exploreLoop()
 })
 
-bot.on('kicked', () => { scheduleReconnect(5000 + Math.floor(Math.random() * 5000)) })
-bot.on('end',    () => { scheduleReconnect(5000 + Math.floor(Math.random() * 5000)) })
-bot.on('message', (json) => { if (!readyForChat) return })
-bot.on('chat', (username, message) => { if (username === bot.username) return })
-bot.on('error', () => {})
+bot.on('kicked', () => { scheduleReconnect(4000 + Math.floor(Math.random() * 4000)) })
+bot.on('end',    () => { scheduleReconnect(4000 + Math.floor(Math.random() * 4000)) })
+bot.on('error',  () => {})
