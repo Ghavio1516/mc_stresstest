@@ -407,9 +407,12 @@ class EnhancedPerformanceTester(PerformanceTester):
             try:
                 with open(fp, "r", encoding="utf-8") as f:
                     s = json.load(f)
-                    start = float(s.get("startTime") or 0)
-                    end = float(s.get("endTime") or start)
-                    uptime = (end - start) / 1000.0 if end and start else 0.0
+                    st = float(s.get("startTime") or 0)
+                    lu = float(s.get("lastUpdate") or 0)
+                    mt = os.path.getmtime(fp) * 1000.0
+                    en = float(s.get("endTime") or 0)
+                    effective_end = en or max(lu, mt)
+                    uptime = max(0.0, (effective_end - st) / 1000.0) if st else 0.0
                     stats.append({
                         "username": s.get("username"),
                         "distance2d": float(s.get("distance2D", 0)),

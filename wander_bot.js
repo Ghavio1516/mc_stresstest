@@ -95,6 +95,7 @@ function writeBotStats(finalize = false) {
   const p = bot.entity?.position
   if (p) metrics.end = { x: p.x, z: p.z }
   if (finalize) metrics.endTime = Date.now()
+  metrics.lastUpdate = Date.now()
   const jsonPath = path.join(STATS_DIR, `${bot.username}.json`)
   fs.writeFileSync(jsonPath, JSON.stringify(metrics, null, 2))
   const csvPath = path.join(STATS_DIR, `${bot.username}.csv`)
