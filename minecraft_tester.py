@@ -1,5 +1,15 @@
-#!/usr/bin/env python3
-# Default configuration
+import asyncio
+import json
+import time
+import statistics
+import csv
+import os
+import socket
+import threading
+import subprocess
+from datetime import datetime
+from typing import Dict, List
+
 DEFAULT_CONFIG = {
     "server": {
         "host": "localhost",
@@ -7,6 +17,7 @@ DEFAULT_CONFIG = {
         "rcon_port": 25575,
         "rcon_password": "your_rcon_password"
     },
+    "bot_mode": "real_moving",
     "scenarios": {
         "quick": {
             "player_count": 2,
@@ -38,17 +49,6 @@ DEFAULT_CONFIG = {
         }
     }
 }
-import asyncio
-import json
-import time
-import statistics
-import csv
-import os
-import socket
-import threading
-import subprocess
-from datetime import datetime
-from typing import Dict, List
 
 class MinecraftBot:
     def __init__(self, username: str, server_host: str, server_port: int):
@@ -216,7 +216,7 @@ class EnhancedPerformanceTester(PerformanceTester):
         start = time.time()
         self.stop_event.clear()
 
-        bot_mode = self.config.get("bot_mode", "simulated")
+        bot_mode = self.config.get("bot_mode", "real_moving")
         connected_count = 0
         bot_tasks = []
         moving_mgr = None
@@ -225,7 +225,7 @@ class EnhancedPerformanceTester(PerformanceTester):
             print("\n1️⃣ Deploying bots...")
             print("   Mode: REAL MOVING BOTS (Mineflayer)")
             moving_mgr = RealMovingBotManager(self.server_host, self.server_port, prefix="W_")
-            connected_count = moving_mgr.spawn(config["player_count"], delay_sec=3.0)
+            connected_count = moving_mgr.spawn(config["player_count"], delay_sec=6.0)
             await asyncio.sleep(5 + min(10, config["player_count"]))
         else:
             print("\n1️⃣ Deploying bots...")

@@ -27,7 +27,7 @@ const bot = mineflayer.createBot({
   port: parseInt(arg('port', '25565'), 10),
   username: usernameArg && usernameArg.length >= 3 ? usernameArg : randomName(),
   auth: 'offline',
-  version: '1.21.8'
+  version: '1.21.1'
 })
 
 bot.loadPlugin(pathfinder)
