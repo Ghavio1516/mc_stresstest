@@ -20,7 +20,16 @@ function randomName(prefix = 'W_') {
   return (prefix + base).slice(0, 16)
 }
 
+function scheduleReconnect(ms) {
+  console.log('reconnect in', ms, 'ms')
+  setTimeout(() => process.exit(2), ms)
+}
+
+
 const usernameArg = arg('username', '')
+
+const { EventEmitter } = require('events')
+EventEmitter.defaultMaxListeners = 50
 
 const bot = mineflayer.createBot({
   host: arg('host', '127.0.0.1'),
@@ -29,6 +38,11 @@ const bot = mineflayer.createBot({
   auth: 'offline',
   version: '1.21.1'
 })
+
+bot.setMaxListeners(50)
+if (bot._client && typeof bot._client.setMaxListeners === 'function') {
+  bot._client.setMaxListeners(50)
+}
 
 bot.loadPlugin(pathfinder)
 
@@ -77,6 +91,7 @@ function findFrontier(maxRing = RING_MAX, samples = SAMPLES_PER_RING) {
 async function gotoWithTimeout(pos) {
   return new Promise((resolve) => {
     let done = false
+    bot.pathfinder.setGoal(null)
     const goal = new GoalNear(pos.x, pos.y, pos.z, GOAL_TOLERANCE)
     bot.pathfinder.setGoal(goal, false)
 
@@ -155,5 +170,16 @@ bot.once('spawn', () => {
 })
 
 bot.on('message', () => {})
-bot.on('kicked', (r) => console.log('kicked:', r))
-bot.on('error', (e) => console.log('error:', e))
+bot.on('kicked', (r) => {
+  console.log('kicked:', r)
+  scheduleReconnect(5000 + Math.floor(Math.random() * 5000))
+})
+
+bot.on('end', (r) => {
+  console.log('end:', r)
+  scheduleReconnect(5000 + Math.floor(Math.random() * 5000))
+})
+
+bot.on('error', (e) => {
+  console.log('error:', e)
+})

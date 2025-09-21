@@ -1,8 +1,8 @@
 {
   "server": {
-        "host": "premium8.alstore.space",
-        "port": 25569,
-        "rcon_port": 25835,
+        "host": "basic-7.alstore.space",
+        "port": 25572,
+        "rcon_port": 25912,
         "rcon_password": "apaya",
         "bot_mode": "real_moving" 
     },
