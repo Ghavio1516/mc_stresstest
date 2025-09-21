@@ -22,5 +22,7 @@ mkdir results 2>nul
 :: Run the tester
 echo 🚀 Starting Performance Tester...
 python minecraft_tester.py
+echo 🚀 Creating Summary...
+python bot_stats_merge.py
 
 pause

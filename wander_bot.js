@@ -1,6 +1,8 @@
 const { EventEmitter } = require('events')
 EventEmitter.defaultMaxListeners = 50
 
+const fs = require('fs')
+const path = require('path')
 const mineflayer = require('mineflayer')
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder')
 const { GoalNear } = goals
@@ -39,7 +41,6 @@ function hashAngle(str) {
 }
 
 const usernameArg = arg('username', '')
-
 const bot = mineflayer.createBot({
   host: arg('host', '127.0.0.1'),
   port: parseInt(arg('port', '25565'), 10),
@@ -53,6 +54,80 @@ bot.setMaxListeners(50)
 if (bot._client && typeof bot._client.setMaxListeners === 'function') bot._client.setMaxListeners(50)
 
 const visited = new Set()
+const STATS_DIR = path.join(process.cwd(), 'results', 'bot_stats')
+fs.mkdirSync(STATS_DIR, { recursive: true })
+
+const metrics = {
+  username: null,
+  startTime: null,
+  endTime: null,
+  start: { x: 0, z: 0 },
+  end: { x: 0, z: 0 },
+  distance2D: 0,
+  uniqueChunks: 0,
+  stuckCount: 0,
+  recoverClimb: 0,
+  recoverDig: 0,
+  goalsReached: 0,
+  newChunksReached: 0
+}
+
+function metricInit() {
+  metrics.username = bot.username
+  metrics.startTime = Date.now()
+  metrics.start = { x: bot.entity.position.x, z: bot.entity.position.z }
+}
+
+let lastTrack = null
+function trackDistanceTick() {
+  const p = bot.entity?.position
+  if (!p) return
+  if (!lastTrack) { lastTrack = { x: p.x, z: p.z }; return }
+  const dx = p.x - lastTrack.x
+  const dz = p.z - lastTrack.z
+  metrics.distance2D += Math.sqrt(dx * dx + dz * dz)
+  lastTrack = { x: p.x, z: p.z }
+}
+
+function updateUniqueChunks() { metrics.uniqueChunks = visited.size }
+
+function writeBotStats(finalize = false) {
+  const p = bot.entity?.position
+  if (p) metrics.end = { x: p.x, z: p.z }
+  if (finalize) metrics.endTime = Date.now()
+  const jsonPath = path.join(STATS_DIR, `${bot.username}.json`)
+  fs.writeFileSync(jsonPath, JSON.stringify(metrics, null, 2))
+  const csvPath = path.join(STATS_DIR, `${bot.username}.csv`)
+  const header = [
+    'username','start_x','start_z','end_x','end_z',
+    'distance2d','unique_chunks','stuck','recover_climb','recover_dig',
+    'goals','new_chunks','uptime_s'
+  ].join(',')
+  const uptime = ((metrics.endTime ?? Date.now()) - metrics.startTime) / 1000
+  const row = [
+    metrics.username,
+    Math.round(metrics.start.x), Math.round(metrics.start.z),
+    Math.round(metrics.end.x), Math.round(metrics.end.z),
+    metrics.distance2D.toFixed(2),
+    metrics.uniqueChunks,
+    metrics.stuckCount,
+    metrics.recoverClimb,
+    metrics.recoverDig,
+    metrics.goalsReached,
+    metrics.newChunksReached,
+    uptime.toFixed(1)
+  ].join(',')
+  if (!fs.existsSync(csvPath)) fs.writeFileSync(csvPath, header + '\n')
+  fs.writeFileSync(csvPath, fs.readFileSync(csvPath, 'utf-8') + row + '\n')
+}
+
+let statTimer = null
+function startStatTimers(){
+  statTimer = setInterval(() => {
+    try { trackDistanceTick(); updateUniqueChunks(); writeBotStats(false) } catch {}
+  }, 5000)
+}
+function stopStatTimers(){ if (statTimer) clearInterval(statTimer) }
 
 function safeChat(msg) { try { bot.chat(msg) } catch {} }
 let lastChatTs = 0
@@ -124,7 +199,7 @@ function separationOffset() {
   return { ox, oz }
 }
 
-async function gotoWithTimeout(pos, announce = '') {
+async function gotoWithTimeout(pos, announce = '', isNewChunkMove = false) {
   if (announce) chatThrottled(announce)
   return new Promise((resolve) => {
     let done = false
@@ -135,7 +210,12 @@ async function gotoWithTimeout(pos, announce = '') {
     const iv = setInterval(() => {
       if (!bot.pathfinder.isMoving()) {
         clearInterval(iv); clearTimeout(timer)
-        if (!done) { done = true; resolve(true) }
+        if (!done) {
+          done = true
+          metrics.goalsReached += 1
+          if (isNewChunkMove) metrics.newChunksReached += 1
+          resolve(true)
+        }
       }
     }, 1000)
   })
@@ -148,14 +228,13 @@ async function trySurfaceRecovery() {
   m.allowParkour = true
   m.canDig = false
   bot.pathfinder.setMovements(m)
-
+  metrics.stuckCount += 1
   for (let i = 0; i < 3; i++) {
     const p = bot.entity.position
     const up = { x: p.x, y: p.y + 4 + i * 2, z: p.z }
     const ok = await gotoWithTimeout(up, 'im stuck, trying to climb up')
-    if (ok) return true
+    if (ok) { metrics.recoverClimb += 1; return true }
   }
-
   m.canDig = true
   bot.pathfinder.setMovements(m)
   for (let i = 0; i < 3; i++) {
@@ -163,6 +242,7 @@ async function trySurfaceRecovery() {
     const up = { x: p.x, y: p.y + 6 + i * 2, z: p.z }
     const ok = await gotoWithTimeout(up, 'im stuck, digging my way up')
     if (ok) {
+      metrics.recoverDig += 1
       m.canDig = false
       bot.pathfinder.setMovements(m)
       return true
@@ -177,11 +257,7 @@ async function initialOutwardScatter() {
   const base = spawnPos.clone()
   const radius = 220 + Math.random() * 260
   const { ox, oz } = separationOffset()
-  const target = {
-    x: base.x + Math.cos(outwardBearing) * radius + ox,
-    y: base.y,
-    z: base.z + Math.sin(outwardBearing) * radius + oz
-  }
+  const target = { x: base.x + Math.cos(outwardBearing) * radius + ox, y: base.y, z: base.z + Math.sin(outwardBearing) * radius + oz }
   chatThrottled(`i just got here, heading to ${Math.round(target.x)}, ${Math.round(target.z)}`)
   await gotoWithTimeout(target)
 }
@@ -207,7 +283,6 @@ async function exploreLoop() {
         lastPos = cur
         lastCheck = now
       }
-
       const cand = findFrontierOutward()
       if (!cand) {
         const p = bot.entity.position
@@ -218,7 +293,7 @@ async function exploreLoop() {
         const { ox, oz } = separationOffset()
         const t = { x: cand.target.x + ox, y: cand.target.y, z: cand.target.z + oz }
         const msg = `im going to new chunk at ${Math.round(t.x)}, ${Math.round(t.z)}`
-        const ok = await gotoWithTimeout(t, msg)
+        const ok = await gotoWithTimeout(t, msg, true)
         if (ok) visited.add(chunkKey(cand.chunk.tx, cand.chunk.tz))
       }
       await new Promise((r) => setTimeout(r, 1000))
@@ -237,16 +312,19 @@ bot.once('spawn', async () => {
   moves.allowParkour = true
   moves.canDig = false
   bot.pathfinder.setMovements(moves)
-
   spawnPos = bot.entity.position.clone()
   spawnChunk = { cx: Math.floor(spawnPos.x / CHUNK_SIZE), cz: Math.floor(spawnPos.z / CHUNK_SIZE) }
   outwardBearing = hashAngle(bot.username)
-
+  metricInit()
+  startStatTimers()
   await new Promise((r) => setTimeout(r, 1000))
   await initialOutwardScatter()
   await exploreLoop()
 })
 
-bot.on('kicked', () => { scheduleReconnect(4000 + Math.floor(Math.random() * 4000)) })
-bot.on('end',    () => { scheduleReconnect(4000 + Math.floor(Math.random() * 4000)) })
-bot.on('error',  () => {})
+function finalizeAndExitLater(){ try { stopStatTimers(); writeBotStats(true) } catch {} }
+bot.on('kicked', () => { finalizeAndExitLater(); scheduleReconnect(4000 + Math.floor(Math.random() * 4000)) })
+bot.on('end',    () => { finalizeAndExitLater(); scheduleReconnect(4000 + Math.floor(Math.random() * 4000)) })
+process.on('SIGINT', () => { finalizeAndExitLater(); process.exit(0) })
+process.on('beforeExit', () => { finalizeAndExitLater() })
+bot.on('error', () => {})
