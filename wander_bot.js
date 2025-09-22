@@ -3,34 +3,35 @@ EventEmitter.defaultMaxListeners = 50
 
 const fs = require('fs')
 const path = require('path')
+const { spawn: spawnProc } = require('child_process')
 const mineflayer = require('mineflayer')
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder')
 const { GoalNear } = goals
 
+// ==== Config constants (base) ====
 const CHUNK_SIZE = 16
 const RING_MAX = 20
 const SAMPLES_PER_RING = 10
 const GOAL_TOLERANCE = 2
-const TIMEOUT_MS = 45000
-const STUCK_CHECK_MS = 8000
+const BASE_TIMEOUT_MS = 35000
+const BASE_STUCK_MS = 6000
+const BASE_CHAT_MS = 3000
 const STUCK_MIN_MOVE = 2.0
-const CHAT_COOLDOWN_MS = 4000
 const MIN_SEPARATION = 48
 const REPEL_WEIGHT = 32
 const NAME_PREFIX = 'W_'
 
+// ==== Args ====
 function arg(name, def) {
   const i = process.argv.indexOf('--' + name)
   return i > -1 ? process.argv[i + 1] : def
 }
-
 function randomName(prefix = NAME_PREFIX) {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_'
   let base = ''
   while (base.length < 12) base += chars[Math.floor(Math.random() * chars.length)]
   return (prefix + base).slice(0, 16)
 }
-
 function hashAngle(str) {
   let h = 2166136261 >>> 0
   for (let i = 0; i < str.length; i++) {
@@ -41,18 +42,29 @@ function hashAngle(str) {
 }
 
 const usernameArg = arg('username', '')
-const bot = mineflayer.createBot({
+const BOT_ID = parseInt(arg('bot-id', '0'), 10) || 0
+const PERF = process.argv.includes('--performance')
+
+// Staggered timing based on PERF/BOT_ID
+const TIMEOUT_MS = PERF ? BASE_TIMEOUT_MS + Math.random() * 10000 : 45000
+const STUCK_CHECK_MS = PERF ? BASE_STUCK_MS + Math.random() * 4000 : 8000
+const CHAT_COOLDOWN_MS = PERF ? BASE_CHAT_MS + BOT_ID * 500 : 4000
+
+const BOT_OPTS = {
   host: arg('host', '127.0.0.1'),
   port: parseInt(arg('port', '25565'), 10),
   username: usernameArg && usernameArg.length >= 3 ? usernameArg : randomName(),
   auth: 'offline',
   version: '1.21.1'
-})
+}
+
+const bot = mineflayer.createBot(BOT_OPTS)
 
 bot.loadPlugin(pathfinder)
 bot.setMaxListeners(50)
 if (bot._client && typeof bot._client.setMaxListeners === 'function') bot._client.setMaxListeners(50)
 
+// ==== Stats ====
 const visited = new Set()
 const STATS_DIR = path.join(process.cwd(), 'results', 'bot_stats')
 fs.mkdirSync(STATS_DIR, { recursive: true })
@@ -61,6 +73,7 @@ const metrics = {
   username: null,
   startTime: null,
   endTime: null,
+  lastUpdate: null,
   start: { x: 0, z: 0 },
   end: { x: 0, z: 0 },
   distance2D: 0,
@@ -77,7 +90,6 @@ function metricInit() {
   metrics.startTime = Date.now()
   metrics.start = { x: bot.entity.position.x, z: bot.entity.position.z }
 }
-
 let lastTrack = null
 function trackDistanceTick() {
   const p = bot.entity?.position
@@ -88,9 +100,7 @@ function trackDistanceTick() {
   metrics.distance2D += Math.sqrt(dx * dx + dz * dz)
   lastTrack = { x: p.x, z: p.z }
 }
-
 function updateUniqueChunks() { metrics.uniqueChunks = visited.size }
-
 function writeBotStats(finalize = false) {
   const p = bot.entity?.position
   if (p) metrics.end = { x: p.x, z: p.z }
@@ -124,27 +134,27 @@ function writeBotStats(finalize = false) {
 
 let statTimer = null
 function startStatTimers(){
+  const iv = PERF ? (4000 + BOT_ID * 200) : 5000
   statTimer = setInterval(() => {
     try { trackDistanceTick(); updateUniqueChunks(); writeBotStats(false) } catch {}
-  }, 5000)
+  }, iv)
 }
 function stopStatTimers(){ if (statTimer) clearInterval(statTimer) }
 
+// ==== Utils ====
 function safeChat(msg) { try { bot.chat(msg) } catch {} }
 let lastChatTs = 0
 function chatThrottled(msg) {
   const now = Date.now()
   if (now - lastChatTs >= CHAT_COOLDOWN_MS) { lastChatTs = now; safeChat(msg) }
 }
-
+function yieldEventLoop(){ return new Promise(r => setImmediate(r)) }
 function chunkKey(cx, cz) { return `${cx}:${cz}` }
 bot.on('chunkColumnLoad', (pt) => { visited.add(chunkKey(pt.x, pt.z)) })
-
 function currentChunk() {
   const p = bot.entity.position
   return { cx: Math.floor(p.x / CHUNK_SIZE), cz: Math.floor(p.z / CHUNK_SIZE), y: Math.floor(p.y) }
 }
-
 function chunkCenter(cx, cz, y) { return { x: cx * CHUNK_SIZE + CHUNK_SIZE / 2, y, z: cz * CHUNK_SIZE + CHUNK_SIZE / 2 } }
 
 function findFrontierGeneric(maxRing = RING_MAX, samples = SAMPLES_PER_RING) {
@@ -228,7 +238,7 @@ async function trySurfaceRecovery() {
   m.allow1by1towers = true
   m.allowParkour = true
   m.canDig = false
-  bot.pathfinder.setMovements(m)
+  if (bot.pathfinder && bot.pathfinder.setMovements) bot.pathfinder.setMovements(m)
   metrics.stuckCount += 1
   for (let i = 0; i < 3; i++) {
     const p = bot.entity.position
@@ -237,7 +247,7 @@ async function trySurfaceRecovery() {
     if (ok) { metrics.recoverClimb += 1; return true }
   }
   m.canDig = true
-  bot.pathfinder.setMovements(m)
+  if (bot.pathfinder && bot.pathfinder.setMovements) bot.pathfinder.setMovements(m)
   for (let i = 0; i < 3; i++) {
     const p = bot.entity.position
     const up = { x: p.x, y: p.y + 6 + i * 2, z: p.z }
@@ -245,12 +255,12 @@ async function trySurfaceRecovery() {
     if (ok) {
       metrics.recoverDig += 1
       m.canDig = false
-      bot.pathfinder.setMovements(m)
+      if (bot.pathfinder && bot.pathfinder.setMovements) bot.pathfinder.setMovements(m)
       return true
     }
   }
   m.canDig = false
-  bot.pathfinder.setMovements(m)
+  if (bot.pathfinder && bot.pathfinder.setMovements) bot.pathfinder.setMovements(m)
   return false
 }
 
@@ -266,8 +276,10 @@ async function initialOutwardScatter() {
 async function exploreLoop() {
   let lastPos = bot.entity.position.clone()
   let lastCheck = Date.now()
+  let cycle = 0
   while (true) {
     try {
+      if (++cycle % 3 === 0) await yieldEventLoop()
       const now = Date.now()
       if (now - lastCheck >= STUCK_CHECK_MS) {
         const cur = bot.entity.position.clone()
@@ -297,27 +309,48 @@ async function exploreLoop() {
         const ok = await gotoWithTimeout(t, msg, true)
         if (ok) visited.add(chunkKey(cand.chunk.tx, cand.chunk.tz))
       }
-      await new Promise((r) => setTimeout(r, 1000))
+      await new Promise((r) => setTimeout(r, 800 + Math.random() * 400))
     } catch {
-      await new Promise((r) => setTimeout(r, 1800))
+      await new Promise((r) => setTimeout(r, 1500 + Math.random() * 500))
     }
   }
 }
 
-function scheduleReconnect(ms) { setTimeout(() => process.exit(2), ms) }
+// ==== Reconnect: respawn self ====
+function scheduleReconnect(ms) {
+  setTimeout(() => {
+    try { stopStatTimers(); writeBotStats(true) } catch {}
+    // Fork proses baru dengan argumen yang sama, dan keluar dari proses lama
+    const args = process.argv.slice(1)
+    spawnProc(process.argv[0], args, { stdio: 'inherit' })
+    process.exit(0)
+  }, ms)
+}
 
+// ==== Lifecycle ====
 bot.once('spawn', async () => {
+  // Guard: pastikan pathfinder siap
+  if (!bot.pathfinder) bot.loadPlugin(pathfinder)
+
   const mcData = require('minecraft-data')(bot.version)
   const moves = new Movements(bot, mcData)
   moves.allow1by1towers = true
   moves.allowParkour = true
   moves.canDig = false
-  bot.pathfinder.setMovements(moves)
+  if (bot.pathfinder && bot.pathfinder.setMovements) {
+    bot.pathfinder.setMovements(moves)
+  } else {
+    await new Promise(r => setTimeout(r, 200))
+    if (bot.pathfinder && bot.pathfinder.setMovements) bot.pathfinder.setMovements(moves)
+  }
+
   spawnPos = bot.entity.position.clone()
   spawnChunk = { cx: Math.floor(spawnPos.x / CHUNK_SIZE), cz: Math.floor(spawnPos.z / CHUNK_SIZE) }
   outwardBearing = hashAngle(bot.username)
+
   metricInit()
   startStatTimers()
+
   await new Promise((r) => setTimeout(r, 1000))
   await initialOutwardScatter()
   await exploreLoop()
