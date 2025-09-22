@@ -169,7 +169,7 @@ class RealMovingBotManager:
                 self.node_path, self.script,
                 "--host", str(self.server_host),
                 "--port", str(self.server_port),
-                "--username", name
+                "--username", name, "--performance"
             ]
             try:
                 p = subprocess.Popen(
