@@ -161,7 +161,7 @@ class RealMovingBotManager:
         name = f"{self.prefix}{idx}"
         return name[:16]
 
-    def spawn(self, count: int, delay_sec: float = 3.0):
+    def spawn(self, count: int, delay_sec: float = 6.0):
         ok = 0
         for i in range(count):
             name = self._seq_name(i + 1)
@@ -169,16 +169,8 @@ class RealMovingBotManager:
                 self.node_path, self.script,
                 "--host", str(self.server_host),
                 "--port", str(self.server_port),
-                "--username", name,
-                "--bot-id", str(i + 1)
+                "--username", name, "--performance"
             ]
-            # performance flag for many bots
-            if count >= 8:
-                cmd.append("--performance")
-                delay = max(delay_sec, 8.0)
-            else:
-                delay = delay_sec
-
             try:
                 p = subprocess.Popen(
                     cmd,
@@ -195,7 +187,7 @@ class RealMovingBotManager:
                 print(f"   launched real bot: {name}")
             except Exception as e:
                 print(f"   fail spawn {name}: {e}")
-            time.sleep(delay)
+            time.sleep(delay_sec)
         return ok
 
     def stop_all(self):
