@@ -164,18 +164,28 @@ class EnhancedPerformanceTester:
 
     async def run_test(self, scenario_name="quick"):
         """Run performance test"""
-        scenario = self.config["scenarios"].get(scenario_name)
-        if not scenario:
-            print(f"Scenario '{scenario_name}' not found!")
-            return
+        # Handle custom scenario (dict) or predefined scenario (string)
+        if isinstance(scenario_name, dict):
+            scenario = scenario_name
+        else:
+            scenario = self.config["scenarios"].get(scenario_name)
+            if not scenario:
+                print(f"Scenario '{scenario_name}' not found!")
+                return
         
         print(f"\n{'='*70}")
         print(f"MINECRAFT SERVER PERFORMANCE TEST")
         print(f"{'='*70}")
-        print(f"Scenario:        {scenario_name.upper()}")
-        print(f"Description:     {scenario['description']}")
-        print(f"Target bots:     {scenario['player_count']}")
-        print(f"Duration:        {scenario['duration_minutes']} minutes")
+        if isinstance(scenario_name, dict):
+            print(f"Scenario:        CUSTOM")
+            print(f"Description:     {scenario['description']}")
+            print(f"Target bots:     {scenario['player_count']}")
+            print(f"Duration:        {scenario['duration_minutes']} minutes")
+        else:
+            print(f"Scenario:        {scenario_name.upper()}")
+            print(f"Description:     {scenario['description']}")
+            print(f"Target bots:     {scenario['player_count']}")
+            print(f"Duration:        {scenario['duration_minutes']} minutes")
         print(f"Server:          {self.server_host}:{self.server_port}")
         print(f"Mode:            SEQUENTIAL (Ultra Conservative)")
         print(f"{'='*70}\n")
@@ -227,7 +237,10 @@ class EnhancedPerformanceTester:
     def _generate_report(self, scenario_name, spawned_count):
         """Generate test report"""
         print(f"\n{'='*70}")
-        print(f"TEST REPORT - {scenario_name.upper()}")
+        if isinstance(scenario_name, dict):
+            print(f"TEST REPORT - CUSTOM")
+        else:
+            print(f"TEST REPORT - {scenario_name.upper()}")
         print(f"{'='*70}")
         print(f"Bots spawned:    {spawned_count}")
         print(f"Start time:      {self.test_start_time.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -279,8 +292,32 @@ async def main():
         print(f"  {idx}. {name:10s} - {config['description']}")
     
     print("\nEnter scenario name (or press Enter for 'quick'): ", end='')
-    scenario = input().strip() or "quick"
-    
+    scenario_input = input().strip()
+
+    if not scenario_input:
+        scenario = "quick"
+    elif scenario_input == "custom":
+        # Custom scenario
+        print("\n--- CUSTOM SCENARIO ---")
+        try:
+            player_count = int(input("Enter number of bots: ").strip())
+            duration_minutes = int(input("Enter test duration (minutes): ").strip())
+            if player_count <= 0 or duration_minutes <= 0:
+                print("XX Values must be positive! Using quick scenario.")
+                scenario = "quick"
+            else:
+                # Create custom scenario dict
+                scenario = {
+                    "player_count": player_count,
+                    "duration_minutes": duration_minutes,
+                    "description": f"{player_count} bots - Custom test"
+                }
+        except ValueError:
+            print("XX Invalid input! Using quick scenario.")
+            scenario = "quick"
+    else:
+        scenario = scenario_input
+
     await tester.run_test(scenario)
 
 
