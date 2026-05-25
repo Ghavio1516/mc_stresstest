@@ -276,15 +276,15 @@ class EnhancedPerformanceTester:
 
 async def main():
     print("""
-╔══════════════════════════════════════════════════════════════╗
-║   MINECRAFT SERVER PERFORMANCE TESTER - SEQUENTIAL MODE      ║
-║     For Servers with VERY Strict Connection Throttle         ║
-╚══════════════════════════════════════════════════════════════╝
+===========================================
+MINECRAFT SERVER PERFORMANCE TESTER - SEQUENTIAL MODE
+  For Servers with VERY Strict Connection Throttle
+===========================================
     """)
     
     tester = EnhancedPerformanceTester("config.json")
     
-    print("\n⚠️  WARNING: This server has VERY strict throttle settings!")
+    print("\n[WARNING] This server has VERY strict throttle settings!")
     print("   Sequential mode will spawn bots one-by-one slowly.\n")
     
     print("Available scenarios:")
