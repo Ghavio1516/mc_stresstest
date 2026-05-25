@@ -212,21 +212,34 @@ class EnhancedPerformanceTester:
             print("XX No bots spawned! Aborting test.")
             return
         
-        print(f"\n>>> RUNNING TEST FOR {scenario['duration_minutes']} MINUTES")
-        end_time = datetime.now() + timedelta(minutes=scenario['duration_minutes'])
-        print(f"    Test will complete at: {end_time.strftime('%H:%M:%S')}")
-        
-        duration_sec = scenario["duration_minutes"] * 60
-        start_time = time.time()
-        
-        while time.time() - start_time < duration_sec:
-            elapsed = time.time() - start_time
-            remaining = duration_sec - elapsed
-            
-            print(f"    Progress: {elapsed/60:.1f}/{scenario['duration_minutes']:.1f} min | "
-                  f"Remaining: {remaining/60:.1f} min", end='\r')
-            
-            await asyncio.sleep(10)
+        if scenario["duration_minutes"] > 0:
+            print(f"\n>>> RUNNING TEST FOR {scenario['duration_minutes']} MINUTES")
+            end_time = datetime.now() + timedelta(minutes=scenario['duration_minutes'])
+            print(f"    Test will complete at: {end_time.strftime('%H:%M:%S')}")
+
+            duration_sec = scenario["duration_minutes"] * 60
+            start_time = time.time()
+
+            while time.time() - start_time < duration_sec:
+                elapsed = time.time() - start_time
+                remaining = duration_sec - elapsed
+
+                print(f"    Progress: {elapsed/60:.1f}/{scenario['duration_minutes']:.1f} min | "
+                      f"Remaining: {remaining/60:.1f} min", end='\r')
+
+                await asyncio.sleep(10)
+        else:
+            # Unlimited mode
+            print(f"\n>>> RUNNING UNLIMITED TEST (Press Ctrl+C to stop)")
+            start_time = time.time()
+
+            try:
+                while True:
+                    elapsed = time.time() - start_time
+                    print(f"    Progress: {elapsed/60:.1f} min (Unlimited)", end='\r')
+                    await asyncio.sleep(10)
+            except KeyboardInterrupt:
+                print(f"\n\n>>> TEST STOPPED BY USER")
         
         print(f"\n\n>>> TEST COMPLETE")
         
@@ -238,24 +251,27 @@ class EnhancedPerformanceTester:
         """Generate test report"""
         print(f"\n{'='*70}")
         if isinstance(scenario_name, dict):
-            print(f"TEST REPORT - CUSTOM")
+            if scenario_name.get('duration_minutes', 0) == 0:
+                print(f"TEST REPORT - CUSTOM (UNLIMITED)")
+            else:
+                print(f"TEST REPORT - CUSTOM")
         else:
             print(f"TEST REPORT - {scenario_name.upper()}")
         print(f"{'='*70}")
         print(f"Bots spawned:    {spawned_count}")
         print(f"Start time:      {self.test_start_time.strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"End time:        {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        
+
         stats_dir = os.path.join('results', 'bot_stats')
         if os.path.exists(stats_dir):
             stats_files = glob.glob(os.path.join(stats_dir, 'W_*.json'))
-            
+
             if stats_files:
                 print(f"Stats collected: {len(stats_files)} bots")
-                
+
                 total_distance = 0
                 total_chunks = 0
-                
+
                 for f in stats_files:
                     try:
                         with open(f, 'r') as sf:
@@ -264,13 +280,13 @@ class EnhancedPerformanceTester:
                             total_chunks += data.get('uniqueChunks', 0)
                     except:
                         pass
-                
+
                 if len(stats_files) > 0:
                     print(f"Total distance:  {total_distance:.1f} blocks")
                     print(f"Total chunks:    {total_chunks}")
                     print(f"Avg per bot:     {total_distance/len(stats_files):.1f} blocks, "
                           f"{total_chunks/len(stats_files):.1f} chunks")
-        
+
         print(f"{'='*70}\n")
 
 
@@ -301,16 +317,21 @@ MINECRAFT SERVER PERFORMANCE TESTER - SEQUENTIAL MODE
         print("\n--- CUSTOM SCENARIO ---")
         try:
             player_count = int(input("Enter number of bots: ").strip())
-            duration_minutes = int(input("Enter test duration (minutes): ").strip())
-            if player_count <= 0 or duration_minutes <= 0:
-                print("XX Values must be positive! Using quick scenario.")
+            duration_input = input("Enter test duration (minutes, or 0 for unlimited): ").strip()
+            duration_minutes = int(duration_input) if duration_input else 0
+
+            if player_count <= 0:
+                print("XX Bot count must be positive! Using quick scenario.")
+                scenario = "quick"
+            elif duration_minutes < 0:
+                print("XX Duration cannot be negative! Using quick scenario.")
                 scenario = "quick"
             else:
                 # Create custom scenario dict
                 scenario = {
                     "player_count": player_count,
                     "duration_minutes": duration_minutes,
-                    "description": f"{player_count} bots - Custom test"
+                    "description": f"{player_count} bots - Custom test" + (" (Unlimited)" if duration_minutes == 0 else "")
                 }
         except ValueError:
             print("XX Invalid input! Using quick scenario.")
