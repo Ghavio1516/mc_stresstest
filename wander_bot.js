@@ -7,15 +7,15 @@ const mineflayer = require('mineflayer')
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder')
 const { GoalNear } = goals
 
-// ==== ULTRA OPTIMIZED CONFIG ====
+// ==== MAXIMUM EXPLORATION CONFIG ====
 const CHUNK_SIZE = 16
-const RING_MAX = 10              // REDUCED from 15 (less pathfinding)
-const SAMPLES_PER_RING = 6       // REDUCED from 8
-const GOAL_TOLERANCE = 4         // INCREASED from 3 (less precise = faster)
-const BASE_TIMEOUT_MS = 60000    // INCREASED from 40000 (more patient)
-const BASE_STUCK_MS = 12000      // INCREASED from 8000
-const BASE_CHAT_MS = 8000        // INCREASED from 5000 (less chat spam)
-const STUCK_MIN_MOVE = 3.0       // INCREASED from 2.5
+const RING_MAX = 80              // MASSIVELY INCREASED for very far exploration (1280 blocks radius)
+const SAMPLES_PER_RING = 16      // INCREASED for better angular coverage at large distances
+const GOAL_TOLERANCE = 5         // SLIGHTLY INCREASED from 3 (less precise but faster for long journeys)
+const BASE_TIMEOUT_MS = 300000   // GREATLY INCREASED from 120000 (5 minutes for very long journeys)
+const BASE_STUCK_MS = 40000      // INCREASED from 20000 (more time to get unstuck on long treks)
+const BASE_CHAT_MS = 30000       // INCREASED from 15000 (minimal chat spam)
+const STUCK_MIN_MOVE = 1.5       // REDUCED from 2.0 (more sensitive to detect stalls)
 const NAME_PREFIX = 'W_'
 
 // Disable unnecessary features
@@ -317,8 +317,8 @@ class WanderBot {
           }
         }
 
-        // INCREASED sleep time
-        await this.sleep(2000 + Math.random() * 1000)
+        // GREATLY INCREASED sleep time for long journeys
+        await this.sleep(5000 + Math.random() * 3000)
         
       } catch {
         await this.sleep(3000)
