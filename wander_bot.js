@@ -7,18 +7,29 @@ const mineflayer = require('mineflayer')
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder')
 const { GoalNear } = goals
 
-// ==== DIRECTIONAL SPREAD EXPLORATION CONFIG ====
+// ==== FAR TRAVEL EXPLORATION CONFIG ====
 const CHUNK_SIZE = 16
-const MIN_DISTANCE_BEFORE_LOCAL_EXPLORATION = 5000  // Each bot must travel at least 5000 blocks from spawn before local exploration
-const EXPLORATION_RADIUS_PHASE1 = 120   // Chunks for phase 1 (1920 blocks radius for long-distance outward push)
-const EXPLORATION_RADIUS_PHASE2 = 25    // Chunks for phase 2 (400 blocks radius for local spread after min distance)
-const BASE_TIMEOUT_MS = 500000   // 8+ minutes for very long journeys to 5000+ blocks
-const BASE_STUCK_MS = 60000      // More time to get unstuck on long treks
-const BASE_CHAT_MS = 50000       // Minimal chat spam to reduce overhead
-const STUCK_MIN_MOVE = 0.8       // Very sensitive to detect stalls - encourages continuous movement
-const GOAL_TOLERANCE_PHASE1 = 12 // Less precise for long-distance travel (prioritize speed over accuracy)
-const GOAL_TOLERANCE_PHASE2 = 4  // Moderate precision for local exploration phase
 const NAME_PREFIX = 'W_'
+
+// Far travel settings - each bot goes much farther
+const FAR_DISTANCE = 20000               // Target 20,000 blocks from spawn (much farther than 5000)
+const BASE_TIMEOUT_MS = 200000           // Increased timeout for very long journeys (3+ minutes)
+const BASE_STUCK_MS = 30000              // More time to get unstuck on long treks
+const BASE_CHAT_MS = 30000               // Much less chat spam
+const STUCK_MIN_MOVE = 1.5               // More sensitive to detect stalls
+
+// Movement optimization - keep the working config but adjust for distance
+const GOAL_TOLERANCE = 10                // Less precise = faster for long distance
+const RING_MAX = 25                      // Larger search radius
+const SAMPLES_PER_RING = 10              // More samples for better coverage
+
+// Directional spreading - distribute bots in 4 directions
+const DIRECTIONS = [
+  { name: 'NORTH', dx: 0, dz: -1 },
+  { name: 'EAST',  dx: 1, dz:  0 },
+  { name: 'SOUTH', dx: 0, dz:  1 },
+  { name: 'WEST',  dx: -1, dz:  0 }
+]
 
 // Disable unnecessary features
 const ENABLE_CHAT = false        // Disable chat completely
@@ -35,58 +46,19 @@ const BOTS_PER_PROCESS = parseInt(arg('bots-per-process', '5'), 10)
 const START_BOT_ID = parseInt(arg('start-id', '0'), 10)
 const SERVER_HOST = arg('host', '127.0.0.1')
 const SERVER_PORT = parseInt(arg('port', '25565'), 10)
-const TOTAL_BOTS_EXPECTED = parseInt(arg('total-bots', '50'), 10)  // Expected total bots for distribution
 
 function generateUsername(prefix, id) {
   return `${prefix}${id}`
 }
 
-// Direction constants
-const DIRECTIONS = {
-  NORTH: 0,
-  EAST: 1,
-  SOUTH: 2,
-  WEST: 3
-}
-
-// Direction vectors [dx, dz]
-const DIRECTION_VECTORS = [
-  [0, -1],  // NORTH
-  [1, 0],   // EAST
-  [0, 1],   // SOUTH
-  [-1, 0]   // WEST
-]
-
-// Get direction for a bot ID based on expected total bots
-function getBotDirection(botId, totalBots) {
-  const botsPerDirection = Math.ceil(totalBots / 4)
-  const directionIndex = Math.floor(botId / botsPerDirection)
-  return directionIndex % 4  // Wrap around if more than 4 directions
-}
-
-// Get sub-direction within a main direction (for phase 2 spreading)
-function getSubDirection(botId, totalBots) {
-  const botsPerDirection = Math.ceil(totalBots / 4)
-  const directionIndex = Math.floor(botId / botsPerDirection)
-  const botInDirection = botId - (directionIndex * botsPerDirection)
-
-  // Divide bots in this direction into 2 sub-directions (left/right)
-  const botsPerSubDirection = Math.ceil(botsPerDirection / 2)
-  const subDirectionIndex = Math.floor(botInDirection / botsPerSubDirection)
-
-  // Return offset angle: -15° for left, +15° for right (in radians)
-  return (subDirectionIndex === 0) ? -0.261799 : 0.261799  // ±15 degrees in radians
-}
-
-// ==== DIRECTIONAL SPREAD Bot Class ====
+// ==== OPTIMIZED Bot Class ====
 class WanderBot {
-  constructor(botId, host, port, totalBotsExpected) {
+  constructor(botId, host, port) {
     this.botId = botId
     this.host = host
     this.port = port
     this.username = generateUsername(NAME_PREFIX, botId)
     this.visited = new Set()
-    this.totalBotsExpected = totalBotsExpected || 50  // Default if not provided
 
     // Minimal metrics
     this.metrics = {
@@ -101,9 +73,9 @@ class WanderBot {
     this.statTimer = null
     this.spawnPos = null
     this.outwardBearing = null
-    this.phase = 1  // Start with long-distance phase
-    this.phaseChangeDistance = PHASE_DISTANCE_THRESHOLD
-    this.subDirectionOffset = getSubDirection(botId, this.totalBotsExpected)
+    this.targetIndex = this.botId % DIRECTIONS.length  // Distribute bots across 4 directions
+    this.currentTargetDistance = FAR_DISTANCE     // Target far distance
+    this.phase = 1  // Start with far travel phase
 
     this.TIMEOUT_MS = BASE_TIMEOUT_MS
     this.STUCK_CHECK_MS = BASE_STUCK_MS
@@ -124,15 +96,15 @@ class WanderBot {
       keepAlive: true,
       closeTimeout: 180000       // INCREASED from 120000
     })
-    
+
     this.bot.loadPlugin(pathfinder)
     this.bot.setMaxListeners(50)  // REDUCED from 100
-    
+
     if (this.bot._client) {
       this.bot._client.setMaxListeners(50)
       // Remove error logging to reduce overhead
     }
-    
+
     this.setupEventHandlers()
   }
 
@@ -168,7 +140,7 @@ class WanderBot {
       // OPTIMIZED: Minimal movement config
       const mcData = require('minecraft-data')(this.bot.version)
       const moves = new Movements(this.bot, mcData)
-      
+
       // Ultra minimal movement
       moves.allow1by1towers = false     // DISABLED (saves CPU)
       moves.allowParkour = false
@@ -176,27 +148,31 @@ class WanderBot {
       moves.allowSprinting = false      // DISABLED (saves CPU)
       moves.scafoldingBlocks = []
       moves.maxDropDown = 4             // REDUCED from default
-      
+
       if (this.bot.pathfinder && this.bot.pathfinder.setMovements) {
         this.bot.pathfinder.setMovements(moves)
       }
 
       this.spawnPos = this.bot.entity.position.clone()
-      
-      // Calculate main direction for this bot
-      const mainDirection = getBotDirection(this.botId, this.totalBotsExpected)
-      this.mainDirection = mainDirection
 
-      // Calculate base bearing for this direction (0=NORTH, 1=EAST, 2=SOUTH, 3=WEST)
-      const baseBearing = mainDirection * (Math.PI / 2)  // 0, 90, 180, 270 degrees in radians
-      this.outwardBearing = baseBearing + this.subDirectionOffset
+      // Calculate direction for this bot (spread across 4 directions)
+      const direction = DIRECTIONS[this.targetIndex]
+
+      // Set bearing towards far distance in this direction
+      this.outwardBearing = Math.atan2(direction.dz, direction.dx)
+
+      // Store target position for debugging/logging
+      this.targetX = this.spawnPos.x + direction.dx * this.currentTargetDistance
+      this.targetZ = this.spawnPos.z + direction.dz * this.currentTargetDistance
+
+      console.log(`[${this.username}] Target: ${direction.name} (${this.targetX.toFixed(0)}, ${this.targetZ.toFixed(0)})`)
 
       this.metricInit()
       if (ENABLE_STATS) this.startStatTimers()
 
       await this.sleep(2000 + this.botId * 300)  // Longer initial wait
       await this.exploreLoop()  // Skip initial scatter for efficiency
-      
+
     } catch (err) {
       // Silent fail
     }
@@ -229,7 +205,7 @@ class WanderBot {
   trackDistanceTick() {
     const p = this.bot.entity?.position
     if (!p || !this.lastTrack) return
-    
+
     const dx = p.x - this.lastTrack.x
     const dz = p.z - this.lastTrack.z
     this.metrics.distance2D += Math.sqrt(dx * dx + dz * dz)
@@ -266,12 +242,8 @@ class WanderBot {
   findFrontierSimple() {
     const { cx, cz, y } = this.currentChunk()
 
-    // Determine exploration radius and tolerance based on phase
-    const explorationRadius = this.phase === 1 ? EXPLORATION_RADIUS_PHASE1 : EXPLORATION_RADIUS_PHASE2
-    const goalTolerance = this.phase === 1 ? GOAL_TOLERANCE_PHASE1 : GOAL_TOLERANCE_PHASE2
-
     // OPTIMIZED: Simple expanding square search instead of complex ring
-    for (let r = 1; r <= explorationRadius; r++) {
+    for (let r = 1; r <= RING_MAX; r++) {
       // Check 4 cardinal directions only
       const checks = [
         [cx + r, cz],
@@ -284,16 +256,15 @@ class WanderBot {
         if (!this.visited.has(`${tx}:${tz}`)) {
           return {
             target: this.chunkCenter(tx, tz, y),
-            chunk: { tx, tz },
-            tolerance: goalTolerance
+            chunk: { tx, tz }
           }
         }
       }
     }
 
-    // Fallback: Random direction with phase-based distance
+    // Fallback: Random direction
     const angle = Math.random() * Math.PI * 2
-    const dist = explorationRadius * CHUNK_SIZE
+    const dist = RING_MAX * CHUNK_SIZE
     const p = this.bot.entity.position
     return {
       target: {
@@ -301,8 +272,7 @@ class WanderBot {
         y: p.y,
         z: p.z + Math.sin(angle) * dist
       },
-      chunk: null,
-      tolerance: goalTolerance
+      chunk: null
     }
   }
 
@@ -312,11 +282,11 @@ class WanderBot {
     return Math.sqrt(dx * dx + dz * dz)
   }
 
-  async gotoWithTimeout(pos, tolerance = GOAL_TOLERANCE_PHASE1) {
+  async gotoWithTimeout(pos) {
     return new Promise((resolve) => {
       let done = false
       this.bot.pathfinder.setGoal(null)
-      const goal = new GoalNear(pos.x, pos.y, pos.z, tolerance)
+      const goal = new GoalNear(pos.x, pos.y, pos.z, GOAL_TOLERANCE)
       this.bot.pathfinder.setGoal(goal, false)
 
       const timer = setTimeout(() => {
@@ -363,26 +333,26 @@ class WanderBot {
           lastCheck = now
         }
 
-        // Check if we should transition to phase 2 (local exploration)
-        if (this.phase === 1) {
-          const distanceFromSpawn = this.planarDist(this.bot.entity.position, this.spawnPos)
-          if (distanceFromSpawn >= MIN_DISTANCE_BEFORE_LOCAL_EXPLORATION) {
-            console.log(`[${this.username}] Transitioning to phase 2 (local exploration) at ${Math.floor(distanceFromSpawn)} blocks from spawn (minimum ${MIN_DISTANCE_BEFORE_LOCAL_EXPLORATION} reached)`)
-            this.phase = 2
-          }
-        }
-
         // OPTIMIZED: Simple frontier search
         const cand = this.findFrontierSimple()
         if (cand) {
-          await this.gotoWithTimeout(cand.target, cand.tolerance)
+          await this.gotoWithTimeout(cand.target)
           if (cand.chunk) {
             this.visited.add(`${cand.chunk.tx}:${cand.chunk.tz}`)
           }
         }
 
-        // GREATLY INCREASED sleep time for long journeys
-        await this.sleep(5000 + Math.random() * 3000)
+        // Check if we should switch to local exploration after minimum distance
+        if (this.phase === 1) {
+          const distanceFromSpawn = this.planarDist(this.bot.entity.position, this.spawnPos)
+          if (distanceFromSpawn >= 5000) {  // Minimum 5000 blocks from spawn
+            console.log(`[${this.username}] Reached minimum distance of ${Math.floor(distanceFromSpawn)} blocks, switching to local exploration`)
+            this.phase = 2
+          }
+        }
+
+        // INCREASED sleep time
+        await this.sleep(2000 + Math.random() * 1000)
 
       } catch {
         await this.sleep(3000)
@@ -402,13 +372,13 @@ class WanderBot {
 // ==== Main ====
 async function main() {
   const bots = []
-  
+
   // Reduce console spam
   console.log(`Starting ${BOTS_PER_PROCESS} bots (W_${START_BOT_ID}-${START_BOT_ID + BOTS_PER_PROCESS - 1})`)
-  
+
   for (let i = 0; i < BOTS_PER_PROCESS; i++) {
     const botId = START_BOT_ID + i
-    const wanderBot = new WanderBot(botId, SERVER_HOST, SERVER_PORT, TOTAL_BOTS_EXPECTED)
+    const wanderBot = new WanderBot(botId, SERVER_HOST, SERVER_PORT)
 
     try {
       wanderBot.createBot()
@@ -423,7 +393,7 @@ async function main() {
   }
 
   console.log(`Process ready with ${bots.length} bots\n`)
-  
+
   const cleanup = () => {
     bots.forEach((bot) => {
       try {
@@ -433,7 +403,7 @@ async function main() {
     })
     process.exit(0)
   }
-  
+
   process.on('SIGINT', cleanup)
   process.on('SIGTERM', cleanup)
 }
