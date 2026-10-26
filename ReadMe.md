@@ -42,7 +42,15 @@ Toolkit untuk melakukan uji beban dan pemantauan performa Minecraft server, leng
 - Install Node.js 22.x.
 - Di folder proyek, inisialisasi dan pasang dependency:
   - npm init -y
-  - npm install mineflayer mineflayer-pathfinder
+  - npm install
+
+Daftar dependency yang terpasang (lihat `package.json`):
+- mineflayer (^4.33.0) — library utama untuk bot Minecraft
+- mineflayer-pathfinder (^2.4.5) — pathfinding A* untuk pergerakan bot
+- minecraft-data (^3.98.0) — data blok, item, dan versi Minecraft
+- minecraft-protocol (^1.62.0) — protokol jaringan Minecraft
+- prismarine-auth (^2.7.0) — otentikasi (offline mode)
+- prismarine-chat (^1.12.0) — parsing chat Minecraft
 
 ### 3) Konfigurasi server.properties
 - Pastikan:
@@ -105,9 +113,11 @@ python minecraft_tester.py
 
 - Otentikasi: offline.
 - Versi protokol: diset eksplisit ke 1.21.8 agar handshake cocok.
-- Username: otomatis acak, panjang ≤16 karakter, karakter A‑Z a‑z 0‑9 dan underscore.
-- Movement: memilih target acak berkala dalam radius ±96 blok, pathfinding menuju target, memicu chunk load dan world generation.
-- Spawn delay: 3–4 detik per bot untuk menghindari throttle login bawaan server.
+- Username: otomatis acak, panjang <=16 karakter, karakter A-Z a-z 0-9 dan underscore.
+- Movement: memilih target acak berkala, pathfinding menuju target, memicu chunk load dan world generation.
+- Sector-based exploration: setiap bot mendapat sektor unik (360 derajat dibagi N bot), frontier search memprioritaskan chunk di sektor bot itu agar tidak berkumpul di area yang sama.
+- Spawn delay: 3-4 detik per bot untuk menghindari throttle login bawaan server.
+- Pathfinding menggunakan bot.pathfinder.goto() (event-based) dari mineflayer-pathfinder, bukan polling isMoving().
 
 ## Output
 

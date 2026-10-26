@@ -1,5 +1,5 @@
 const { EventEmitter } = require('events')
-EventEmitter.defaultMaxListeners = 50  // REDUCED from 100
+EventEmitter.defaultMaxListeners = 50
 
 const fs = require('fs')
 const path = require('path')
@@ -11,19 +11,16 @@ const { GoalNear } = goals
 const CHUNK_SIZE = 16
 const NAME_PREFIX = 'W_'
 
-// Far travel settings - each bot goes much farther
-const FAR_DISTANCE = 20000               // Target 20,000 blocks from spawn (much farther than 5000)
-const BASE_TIMEOUT_MS = 200000           // Increased timeout for very long journeys (3+ minutes)
-const BASE_STUCK_MS = 30000              // More time to get unstuck on long treks
-const BASE_CHAT_MS = 30000               // Much less chat spam
-const STUCK_MIN_MOVE = 1.5               // More sensitive to detect stalls
+const FAR_DISTANCE = 20000
+const BASE_TIMEOUT_MS = 200000
+const BASE_STUCK_MS = 30000
+const BASE_CHAT_MS = 30000
+const STUCK_MIN_MOVE = 1.5
 
-// Movement optimization - keep the working config but adjust for distance
-const GOAL_TOLERANCE = 10                // Less precise = faster for long distance
-const RING_MAX = 25                      // Larger search radius
-const SAMPLES_PER_RING = 10              // More samples for better coverage
+const GOAL_TOLERANCE = 10
+const RING_MAX = 25
+const SAMPLES_PER_RING = 10
 
-// Directional spreading - distribute bots in 4 directions
 const DIRECTIONS = [
   { name: 'NORTH', dx: 0, dz: -1 },
   { name: 'EAST',  dx: 1, dz:  0 },
@@ -31,10 +28,14 @@ const DIRECTIONS = [
   { name: 'WEST',  dx: -1, dz:  0 }
 ]
 
-// Disable unnecessary features
-const ENABLE_CHAT = false        // Disable chat completely
-const ENABLE_STATS = true        // Keep stats but less frequent
-const STATS_INTERVAL = 15000     // INCREASED from 6000 (update every 15s)
+// Sector-based exploration: divide 360 degrees among bots so they spread out
+// Each bot gets a unique sector and prefers frontier chunks within it
+const SECTOR_COUNT = 8  // Number of sectors around spawn
+const SECTOR_ANGLE = (Math.PI * 2) / SECTOR_COUNT
+
+const ENABLE_CHAT = false
+const ENABLE_STATS = true
+const STATS_INTERVAL = 15000
 
 // ==== Args ====
 function arg(name, def) {
@@ -60,7 +61,6 @@ class WanderBot {
     this.username = generateUsername(NAME_PREFIX, botId)
     this.visited = new Set()
 
-    // Minimal metrics
     this.metrics = {
       username: null,
       startTime: null,
@@ -73,12 +73,16 @@ class WanderBot {
     this.statTimer = null
     this.spawnPos = null
     this.outwardBearing = null
-    this.targetIndex = this.botId % DIRECTIONS.length  // Distribute bots across 4 directions
-    this.currentTargetDistance = FAR_DISTANCE     // Target far distance
-    this.phase = 1  // Start with far travel phase
+    this.targetIndex = this.botId % DIRECTIONS.length
+    this.sectorIndex = this.botId % SECTOR_COUNT  // Unique sector per bot
+    this.currentTargetDistance = FAR_DISTANCE
+    this.phase = 1
 
     this.TIMEOUT_MS = BASE_TIMEOUT_MS
     this.STUCK_CHECK_MS = BASE_STUCK_MS
+    this.isStuck = false
+    this.lastPos = null
+    this.lastPosTime = 0
   }
 
   createBot() {
@@ -88,31 +92,29 @@ class WanderBot {
       username: this.username,
       auth: 'offline',
       version: '1.21.1',
-      viewDistance: 'tiny',      // Already minimal
-      chatLengthLimit: 10,       // REDUCED from 100
+      viewDistance: 'tiny',
+      chatLengthLimit: 10,
       physicsEnabled: true,
-      hideErrors: true,          // CHANGED: Hide errors to reduce console spam
-      checkTimeoutInterval: 120000,  // INCREASED from 90000
+      hideErrors: true,
+      checkTimeoutInterval: 120000,
       keepAlive: true,
-      closeTimeout: 180000       // INCREASED from 120000
+      closeTimeout: 180000
     })
 
     this.bot.loadPlugin(pathfinder)
-    this.bot.setMaxListeners(50)  // REDUCED from 100
+    this.bot.setMaxListeners(50)
 
     if (this.bot._client) {
       this.bot._client.setMaxListeners(50)
-      // Remove error logging to reduce overhead
     }
 
     this.setupEventHandlers()
   }
 
   setupEventHandlers() {
-    // OPTIMIZED: Only track chunks every 2nd chunk load
     let chunkLoadCounter = 0
     this.bot.on('chunkColumnLoad', (pt) => {
-      if (++chunkLoadCounter % 2 === 0) {  // Only count every 2nd chunk
+      if (++chunkLoadCounter % 2 === 0) {
         this.visited.add(`${pt.x}:${pt.z}`)
       }
     })
@@ -122,10 +124,22 @@ class WanderBot {
       await this.onSpawn()
     })
 
-    // Simplified error handlers
     this.bot.on('kicked', () => this.cleanup())
     this.bot.on('end', () => this.cleanup())
-    this.bot.on('error', () => {})  // Ignore errors silently
+    this.bot.on('error', (e) => console.error(`[${this.username}] err`, e?.message || e))
+
+    // FIX: Handle being attacked/hit — reset pathfinding so bot doesn't
+    // try to walk back into danger or get stuck with invalid goal
+    this.bot.on('entityHurt', (entity) => {
+      if (entity === this.bot.entity) {
+        this.onHurt()
+      }
+    })
+  }
+
+  onHurt() {
+    this.bot.pathfinder.setGoal(null)
+    this.isStuck = false
   }
 
   cleanup() {
@@ -137,17 +151,15 @@ class WanderBot {
 
   async onSpawn() {
     try {
-      // OPTIMIZED: Minimal movement config
       const mcData = require('minecraft-data')(this.bot.version)
       const moves = new Movements(this.bot, mcData)
 
-      // Ultra minimal movement
-      moves.allow1by1towers = false     // DISABLED (saves CPU)
+      moves.allow1by1towers = false
       moves.allowParkour = false
       moves.canDig = false
-      moves.allowSprinting = false      // DISABLED (saves CPU)
+      moves.allowSprinting = false
       moves.scafoldingBlocks = []
-      moves.maxDropDown = 4             // REDUCED from default
+      moves.maxDropDown = 4
 
       if (this.bot.pathfinder && this.bot.pathfinder.setMovements) {
         this.bot.pathfinder.setMovements(moves)
@@ -155,13 +167,9 @@ class WanderBot {
 
       this.spawnPos = this.bot.entity.position.clone()
 
-      // Calculate direction for this bot (spread across 4 directions)
       const direction = DIRECTIONS[this.targetIndex]
-
-      // Set bearing towards far distance in this direction
       this.outwardBearing = Math.atan2(direction.dz, direction.dx)
 
-      // Store target position for debugging/logging
       this.targetX = this.spawnPos.x + direction.dx * this.currentTargetDistance
       this.targetZ = this.spawnPos.z + direction.dz * this.currentTargetDistance
 
@@ -170,8 +178,8 @@ class WanderBot {
       this.metricInit()
       if (ENABLE_STATS) this.startStatTimers()
 
-      await this.sleep(2000 + this.botId * 300)  // Longer initial wait
-      await this.exploreLoop()  // Skip initial scatter for efficiency
+      await this.sleep(2000 + this.botId * 300)
+      await this.exploreLoop()
 
     } catch (err) {
       // Silent fail
@@ -182,17 +190,18 @@ class WanderBot {
     this.metrics.username = this.bot.username
     this.metrics.startTime = Date.now()
     this.lastTrack = this.bot.entity.position
+    this.lastPos = this.bot.entity.position.clone()
+    this.lastPosTime = Date.now()
   }
 
   startStatTimers() {
-    // OPTIMIZED: Much less frequent updates
     this.statTimer = setInterval(() => {
       try {
         this.trackDistanceTick()
         this.metrics.uniqueChunks = this.visited.size
         this.writeBotStats(false)
       } catch {}
-    }, STATS_INTERVAL)  // 15s instead of 6s
+    }, STATS_INTERVAL)
   }
 
   stopStatTimers() {
@@ -219,7 +228,7 @@ class WanderBot {
     fs.mkdirSync(STATS_DIR, { recursive: true })
 
     const jsonPath = path.join(STATS_DIR, `${this.bot.username}.json`)
-    fs.writeFileSync(jsonPath, JSON.stringify(this.metrics))  // No pretty print
+    fs.writeFileSync(jsonPath, JSON.stringify(this.metrics))
   }
 
   currentChunk() {
@@ -233,7 +242,7 @@ class WanderBot {
 
   chunkCenter(cx, cz, y) {
     return {
-      x: cx * CHUNK_SIZE + 8,  // Direct offset instead of division
+      x: cx * CHUNK_SIZE + 8,
       y,
       z: cz * CHUNK_SIZE + 8
     }
@@ -241,38 +250,57 @@ class WanderBot {
 
   findFrontierSimple() {
     const { cx, cz, y } = this.currentChunk()
+    const botAngle = this.sectorIndex * SECTOR_ANGLE
 
-    // OPTIMIZED: Simple expanding square search instead of complex ring
+    // Build candidate chunks in expanding rings, then sort by angular proximity to this bot's sector
+    const candidates = []
+
     for (let r = 1; r <= RING_MAX; r++) {
-      // Check 4 cardinal directions only
       const checks = [
         [cx + r, cz],
         [cx - r, cz],
         [cx, cz + r],
-        [cx, cz - r]
+        [cx, cz - r],
+        // Diagonal checks for more coverage
+        [cx + r, cz + r],
+        [cx + r, cz - r],
+        [cx - r, cz + r],
+        [cx - r, cz - r]
       ]
 
       for (const [tx, tz] of checks) {
         if (!this.visited.has(`${tx}:${tz}`)) {
-          return {
-            target: this.chunkCenter(tx, tz, y),
-            chunk: { tx, tz }
-          }
+          candidates.push({ tx, tz })
         }
       }
     }
 
-    // Fallback: Random direction
-    const angle = Math.random() * Math.PI * 2
-    const dist = RING_MAX * CHUNK_SIZE
-    const p = this.bot.entity.position
+    if (candidates.length === 0) {
+      // All chunks visited, pick random far direction
+      const angle = Math.random() * Math.PI * 2
+      const dist = RING_MAX * CHUNK_SIZE
+      const p = this.bot.entity.position
+      return {
+        target: { x: p.x + Math.cos(angle) * dist, y: p.y, z: p.z + Math.sin(angle) * dist },
+        chunk: null
+      }
+    }
+
+    // Score each candidate by angular distance from this bot's sector direction
+    // Prefer chunks that are in this bot's sector
+    const sorted = candidates.sort((a, b) => {
+      const angleA = Math.atan2(a.tz - cz, a.tx - cx)
+      const angleB = Math.atan2(b.tz - cz, b.tx - cx)
+      const diffA = Math.abs(((angleA - botAngle) + Math.PI) % (Math.PI * 2) - Math.PI)
+      const diffB = Math.abs(((angleB - botAngle) + Math.PI) % (Math.PI * 2) - Math.PI)
+      return diffA - diffB
+    })
+
+    // Pick from top candidates (weighted toward this bot's sector)
+    const pick = sorted[Math.floor(Math.random() * Math.min(3, sorted.length))]
     return {
-      target: {
-        x: p.x + Math.cos(angle) * dist,
-        y: p.y,
-        z: p.z + Math.sin(angle) * dist
-      },
-      chunk: null
+      target: this.chunkCenter(pick.tx, pick.tz, y),
+      chunk: { tx: pick.tx, tz: pick.tz }
     }
   }
 
@@ -282,58 +310,83 @@ class WanderBot {
     return Math.sqrt(dx * dx + dz * dz)
   }
 
+  // FIX: Use bot.pathfinder.goto() which is event-based and properly
+  // handles goal_reached, path_stop, noPath, and goal_updated events.
+  // Old gotoWithTimeout polled isMoving() which couldn't distinguish
+  // "reached goal" from "stuck with no path" — that's what caused freezes.
   async gotoWithTimeout(pos) {
     return new Promise((resolve) => {
-      let done = false
-      this.bot.pathfinder.setGoal(null)
-      const goal = new GoalNear(pos.x, pos.y, pos.z, GOAL_TOLERANCE)
-      this.bot.pathfinder.setGoal(goal, false)
-
-      const timer = setTimeout(() => {
-        if (!done) {
-          done = true
-          this.bot.pathfinder.setGoal(null)  // Stop pathfinding
-          resolve(false)
-        }
+      const timeout = setTimeout(() => {
+        this.bot.pathfinder.setGoal(null)
+        resolve(false)
       }, this.TIMEOUT_MS)
 
-      const iv = setInterval(() => {
-        if (!this.bot.pathfinder.isMoving()) {
-          clearInterval(iv)
-          clearTimeout(timer)
-          if (!done) {
-            done = true
-            resolve(true)
-          }
+      let goalReached = false
+      let noPath = false
+
+      const onGoalReached = () => {
+        goalReached = true
+      }
+
+      const onPathUpdate = (results) => {
+        if (results.status === 'noPath' || (results.path && results.path.length === 0)) {
+          noPath = true
         }
-      }, 2000)  // INCREASED from 1500
+      }
+
+      this.bot.on('goal_reached', onGoalReached)
+      this.bot.on('path_update', onPathUpdate)
+
+      this.bot.pathfinder.goto(new GoalNear(pos.x, pos.y, pos.z, GOAL_TOLERANCE))
+        .then(() => {
+          clearTimeout(timeout)
+          this.bot.removeListener('goal_reached', onGoalReached)
+          this.bot.removeListener('path_update', onPathUpdate)
+          resolve(goalReached && !noPath)
+        })
+        .catch(() => {
+          clearTimeout(timeout)
+          this.bot.removeListener('goal_reached', onGoalReached)
+          this.bot.removeListener('path_update', onPathUpdate)
+          resolve(false)
+        })
     })
   }
 
   async exploreLoop() {
-    let lastPos = this.bot.entity.position.clone()
-    let lastCheck = Date.now()
     let cycle = 0
 
     while (true) {
       try {
-        // OPTIMIZED: Less frequent event loop yields
         if (++cycle % 10 === 0) await this.yieldEventLoop()
 
+        // Check if bot is stuck (not moving for STUCK_CHECK_MS)
         const now = Date.now()
-        if (now - lastCheck >= this.STUCK_CHECK_MS) {
-          const cur = this.bot.entity.position.clone()
+        const cur = this.bot.entity.position.clone()
 
-          // Simple stuck check - no recovery, just new goal
-          if (this.planarDist(cur, lastPos) < STUCK_MIN_MOVE) {
-            this.bot.pathfinder.setGoal(null)  // Just stop and continue
+        if (this.lastPos && this.planarDist(cur, this.lastPos) < STUCK_MIN_MOVE) {
+          if (now - this.lastPosTime > this.STUCK_CHECK_MS) {
+            if (!this.isStuck) {
+              this.isStuck = true
+              this.bot.pathfinder.setGoal(null)
+              // Escape stuck: find a new nearby target
+              const stuckPos = this.bot.entity.position.clone()
+              const escapeTarget = {
+                x: stuckPos.x + (Math.random() - 0.5) * 20,
+                y: stuckPos.y,
+                z: stuckPos.z + (Math.random() - 0.5) * 20
+              }
+              await this.gotoWithTimeout(escapeTarget)
+            }
           }
-
-          lastPos = cur
-          lastCheck = now
+        } else {
+          this.isStuck = false
+          this.lastPosTime = now
         }
 
-        // OPTIMIZED: Simple frontier search
+        this.lastPos = cur
+
+        // Find frontier and go there
         const cand = this.findFrontierSimple()
         if (cand) {
           await this.gotoWithTimeout(cand.target)
@@ -342,16 +395,15 @@ class WanderBot {
           }
         }
 
-        // Check if we should switch to local exploration after minimum distance
+        // Phase transition check
         if (this.phase === 1) {
           const distanceFromSpawn = this.planarDist(this.bot.entity.position, this.spawnPos)
-          if (distanceFromSpawn >= 5000) {  // Minimum 5000 blocks from spawn
-            console.log(`[${this.username}] Reached minimum distance of ${Math.floor(distanceFromSpawn)} blocks, switching to local exploration`)
+          if (distanceFromSpawn >= 5000) {
+            console.log(`[${this.username}] Reached ${Math.floor(distanceFromSpawn)} blocks, switching to local exploration`)
             this.phase = 2
           }
         }
 
-        // INCREASED sleep time
         await this.sleep(2000 + Math.random() * 1000)
 
       } catch {
@@ -373,7 +425,6 @@ class WanderBot {
 async function main() {
   const bots = []
 
-  // Reduce console spam
   console.log(`Starting ${BOTS_PER_PROCESS} bots (W_${START_BOT_ID}-${START_BOT_ID + BOTS_PER_PROCESS - 1})`)
 
   for (let i = 0; i < BOTS_PER_PROCESS; i++) {
@@ -385,7 +436,7 @@ async function main() {
       bots.push(wanderBot)
 
       if (i < BOTS_PER_PROCESS - 1) {
-        await new Promise(r => setTimeout(r, 4000))  // 4s stagger
+        await new Promise(r => setTimeout(r, 4000))
       }
     } catch (err) {
       console.error(`[W_${botId}] Failed: ${err.message}`)
@@ -408,7 +459,6 @@ async function main() {
   process.on('SIGTERM', cleanup)
 }
 
-// Reduce error spam
 process.on('uncaughtException', () => {})
 process.on('unhandledRejection', () => {})
 

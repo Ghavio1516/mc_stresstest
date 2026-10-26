@@ -15,8 +15,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   `node wander_bot.js --host <host> --port <port> --username <name>`  
   Example: `node wander_bot.js --host basic-1.alstore.space --port 25641 --username W_Test01`
 
-- **Install Node.js dependencies (if needed)**:  
-  `npm install` (installs mineflayer and mineflayer-pathfinder from package.json)
+- **Install Node.js dependencies**:  
+  `npm install` (installs all dependencies from package.json: mineflayer, mineflayer-pathfinder, minecraft-data, minecraft-protocol, prismarine-auth, prismarine-chat)
 
 - **View test results**:  
   Check the `results/` directory for CSV summary files and JSON detailed outputs.
