@@ -49,6 +49,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Event-based pathfinding**: uses `bot.pathfinder.goto()` with `goal_reached`, `path_update`, and `path_stop` events instead of polling `isMoving()`.
 - **Sector-based exploration**: each bot gets a unique sector (360° / SECTOR_COUNT), frontier search prioritizes chunks in the bot's own sector to avoid clustering.
 - **Stuck detection & escape**: tracks position delta over time; when stuck, cancels current goal and moves to a random nearby escape target.
+- **Terrain navigation**: bots can break hand-breakable blocks (leaves, grass, flowers, vines, web, bamboo) to clear paths. If path is blocked by tool-required blocks (stone, cobblestone, dirt, etc.), bot finds alternative route instead.
+- **Block breaking logic**: `clearPathBlockage()` checks blocks along direct line to target; breaks hand-breakable blocks, skips tool-required blocks and returns false to trigger alternative pathfinding.
 
 ### Configuration Notes
 

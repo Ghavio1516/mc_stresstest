@@ -22,6 +22,33 @@ const RING_MAX = 25
 const SAMPLES_PER_RING = 10
 const JUMP_DURATION_MS = 500
 const JUMP_RETRY_DELAY_MS = 1000
+const BLOCK_BREAK_RETRY_DELAY_MS = 2000
+const MAX_BLOCK_BREAK_ATTEMPTS = 3
+
+// Blocks that can be broken with hand (no tool required)
+const HAND_BREAKABLE_BLOCKS = new Set([
+  'oak_leaves', 'birch_leaves', 'spruce_leaves', 'jungle_leaves',
+  'acacia_leaves', 'dark_oak_leaves', 'mangrove_leaves', 'cherry_leaves',
+  'tall_grass', 'short_grass', 'fern', 'large_fern',
+  'dandelion', 'poppy', 'blue_orchid', 'allium', 'azure_bluet',
+  'red_tulip', 'orange_tulip', 'white_tulip', 'pink_tulip',
+  'oxeye_daisy', 'cornflower', 'lily_of_the_valley',
+  'wither_rose', 'sunflower', 'lilac', 'rose_bush', 'peony',
+  'azalea', 'flowering_azalea', 'moss_carpet', 'pink_petals',
+  'vine', 'tripwire', 'web', 'snow', 'ice', 'packed_ice',
+  'bamboo', 'dead_bush', 'seagrass', 'tall_seagrass'
+])
+
+// Blocks that require a tool (cannot be broken by hand efficiently)
+const TOOL_REQUIRED_BLOCKS = new Set([
+  'stone', 'cobblestone', 'dirt', 'grass_block', 'diorite', 'granite',
+  'andesite', 'deepslate', 'iron_ore', 'gold_ore', 'diamond_ore',
+  'coal_ore', 'lapis_ore', 'redstone_ore', 'emerald_ore', 'nether_quartz_ore',
+  'bedrock', 'obsidian', 'anvil', 'chiseled_stone_bricks',
+  'cracked_stone_bricks', 'mossy_stone_bricks', 'stone_bricks',
+  'sandstone', 'red_sandstone', 'end_stone', 'netherrack',
+  'basalt', 'blackstone', 'crying_obsidian'
+])
 
 const DIRECTIONS = [
   { name: 'NORTH', dx: 0, dz: -1 },
@@ -171,7 +198,7 @@ class WanderBot {
       moves.allowParkour = true
       moves.canDig = true
       moves.allowSprinting = true
-      moves.scafoldingBlocks = ['stone', 'dirt', 'cobblestone', 'planks', 'sandstone']
+      moves.scafoldingBlocks = ['oak_planks', 'birch_planks', 'spruce_planks', 'jungle_planks', 'acacia_planks', 'dark_oak_planks', 'mangrove_planks', 'cherry_planks', 'dirt', 'cobblestone', 'sandstone', 'planks']
       moves.maxDropDown = 4
       moves.allowJump = true
 
@@ -324,6 +351,88 @@ class WanderBot {
     return Math.sqrt(dx * dx + dz * dz)
   }
 
+  // Check if a block at (x, y, z) is air or replaceable (can walk through)
+  isBlockPassable(x, y, z) {
+    try {
+      const block = this.bot.blockAt({ x: Math.floor(x), y: Math.floor(y), z: Math.floor(z) })
+      if (!block) return true
+      const name = block.name
+      return name === 'air' || name === 'cave_air' || name === 'void_air' ||
+        name === 'water' || name === 'flowing_water' ||
+        name === 'lava' || name === 'flowing_lava' ||
+        name === 'snow' || name === 'powder_snow' ||
+        HAND_BREAKABLE_BLOCKS.has(name)
+    } catch {
+      return true
+    }
+  }
+
+  // Check if a block requires a tool to break efficiently
+  blockRequiresTool(name) {
+    return TOOL_REQUIRED_BLOCKS.has(name)
+  }
+
+  // Try to break blocks blocking the path to a target position
+  // Returns true if path was cleared or is now passable
+  async clearPathBlockage(targetPos) {
+    const bot = this.bot
+    const start = bot.entity.position
+    const dx = targetPos.x - start.x
+    const dz = targetPos.z - start.z
+    const dist = Math.sqrt(dx * dx + dz * dz)
+    if (dist < 1) return true
+
+    // Check blocks along the direct line to target
+    const steps = Math.ceil(dist / 2)
+    let blocksBroken = 0
+
+    for (let i = 1; i <= steps && blocksBroken < MAX_BLOCK_BREAK_ATTEMPTS; i++) {
+      const t = i / steps
+      const cx = Math.floor(start.x + dx * t)
+      const cz = Math.floor(start.z + dz * t)
+      const cy = Math.floor(start.y)
+
+      // Check the block at foot level and one block above
+      for (let yOffset = 0; yOffset <= 1; yOffset++) {
+        const block = bot.blockAt({ x: cx, y: cy + yOffset, z: cz })
+        if (!block) continue
+        const name = block.name
+
+        if (name === 'air' || name === 'cave_air' || name === 'void_air') continue
+        if (name === 'water' || name === 'flowing_water') continue
+        if (name === 'lava' || name === 'flowing_lava') continue
+
+        // Check if hand-breakable
+        if (HAND_BREAKABLE_BLOCKS.has(name)) {
+          try {
+            await bot.dig(block)
+            blocksBroken++
+            await this.sleep(200)
+          } catch {
+            // Block not breakable or already gone
+          }
+          continue
+        }
+
+        // Check if tool-required — bot has no tool, skip this path
+        if (this.blockRequiresTool(name)) {
+          return false
+        }
+
+        // Other blocks: try to break
+        try {
+          await bot.dig(block)
+          blocksBroken++
+          await this.sleep(200)
+        } catch {
+          // Cannot break this block
+        }
+      }
+    }
+
+    return true
+  }
+
   // FIX: Use bot.pathfinder.goto() which is event-based and properly
   // handles goal_reached, path_stop, noPath, and goal_updated events.
   // Old gotoWithTimeout polled isMoving() which couldn't distinguish
@@ -420,20 +529,32 @@ class WanderBot {
           if (ENABLE_CHAT) this.bot.chat(msg)
           const arrived = await this.gotoWithTimeout(cand.target)
           if (!arrived && this.isStuck) {
-            // Try jumping over obstacle then retry
-            console.log(`[${this.username}] Stuck after pathfind, trying jump`)
-            if (ENABLE_CHAT) this.bot.chat(`[${this.username}] Stuck, jumping!`)
-            this.bot.setControlState('jump', true)
-            await this.sleep(JUMP_DURATION_MS)
-            try { this.bot.setControlState('jump', false) } catch {}
-            await this.sleep(JUMP_RETRY_DELAY_MS)
-            // Retry with slightly offset target
-            const retryTarget = {
-              x: cand.target.x + (Math.random() - 0.5) * 10,
-              y: cand.target.y,
-              z: cand.target.z + (Math.random() - 0.5) * 10
+            // Try to clear blocking blocks before retrying
+            console.log(`[${this.username}] No path to target, trying to clear blocks`)
+            if (ENABLE_CHAT) this.bot.chat(`[${this.username}] Clearing path!`)
+            const canClear = await this.clearPathBlockage(cand.target)
+            if (canClear) {
+              // Retry with same target after clearing
+              await this.sleep(BLOCK_BREAK_RETRY_DELAY_MS)
+              const retryTarget = {
+                x: cand.target.x + (Math.random() - 0.5) * 5,
+                y: cand.target.y,
+                z: cand.target.z + (Math.random() - 0.5) * 5
+              }
+              await this.gotoWithTimeout(retryTarget)
+            } else {
+              // Path blocked by unbreakable blocks, find alternative
+              console.log(`[${this.username}] Path blocked by unbreakable blocks, finding alternative`)
+              if (ENABLE_CHAT) this.bot.chat(`[${this.username}] Blocked, rerouting!`)
+              // Find a new frontier target
+              const altCand = this.findFrontierSimple()
+              if (altCand) {
+                await this.gotoWithTimeout(altCand.target)
+                if (altCand.chunk) {
+                  this.visited.add(`${altCand.chunk.tx}:${altCand.chunk.tz}`)
+                }
+              }
             }
-            await this.gotoWithTimeout(retryTarget)
           }
           if (cand.chunk) {
             this.visited.add(`${cand.chunk.tx}:${cand.chunk.tz}`)
