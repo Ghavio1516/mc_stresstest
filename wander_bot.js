@@ -20,6 +20,8 @@ const STUCK_MIN_MOVE = 1.5
 const GOAL_TOLERANCE = 10
 const RING_MAX = 25
 const SAMPLES_PER_RING = 10
+const JUMP_DURATION_MS = 500
+const JUMP_RETRY_DELAY_MS = 1000
 
 const DIRECTIONS = [
   { name: 'NORTH', dx: 0, dz: -1 },
@@ -141,9 +143,16 @@ class WanderBot {
     this.bot.pathfinder.setGoal(null)
     this.isStuck = false
     const p = this.bot.entity.position
-    const msg = `[${this.username}] Hit! Canceling pathfinding at (${p.x.toFixed(0)}, ${p.z.toFixed(0)})`
+    const msg = `[${this.username}] Hit! Jumping and rerouting at (${p.x.toFixed(0)}, ${p.z.toFixed(0)})`
     console.log(msg)
     if (ENABLE_CHAT) this.bot.chat(msg)
+    // Jump to avoid danger, then find new target
+    this.bot.setControlState('jump', true)
+    setTimeout(() => {
+      try {
+        this.bot.setControlState('jump', false)
+      } catch {}
+    }, 500)
   }
 
   cleanup() {
@@ -158,12 +167,13 @@ class WanderBot {
       const mcData = require('minecraft-data')(this.bot.version)
       const moves = new Movements(this.bot, mcData)
 
-      moves.allow1by1towers = false
-      moves.allowParkour = false
-      moves.canDig = false
-      moves.allowSprinting = false
-      moves.scafoldingBlocks = []
+      moves.allow1by1towers = true
+      moves.allowParkour = true
+      moves.canDig = true
+      moves.allowSprinting = true
+      moves.scafoldingBlocks = ['stone', 'dirt', 'cobblestone', 'planks', 'sandstone']
       moves.maxDropDown = 4
+      moves.allowJump = true
 
       if (this.bot.pathfinder && this.bot.pathfinder.setMovements) {
         this.bot.pathfinder.setMovements(moves)
@@ -408,7 +418,23 @@ class WanderBot {
           const msg = `[${this.username}] Sector ${sectorDeg}° (${dirName}) -> heading to ${nextDist}`
           console.log(msg)
           if (ENABLE_CHAT) this.bot.chat(msg)
-          await this.gotoWithTimeout(cand.target)
+          const arrived = await this.gotoWithTimeout(cand.target)
+          if (!arrived && this.isStuck) {
+            // Try jumping over obstacle then retry
+            console.log(`[${this.username}] Stuck after pathfind, trying jump`)
+            if (ENABLE_CHAT) this.bot.chat(`[${this.username}] Stuck, jumping!`)
+            this.bot.setControlState('jump', true)
+            await this.sleep(JUMP_DURATION_MS)
+            try { this.bot.setControlState('jump', false) } catch {}
+            await this.sleep(JUMP_RETRY_DELAY_MS)
+            // Retry with slightly offset target
+            const retryTarget = {
+              x: cand.target.x + (Math.random() - 0.5) * 10,
+              y: cand.target.y,
+              z: cand.target.z + (Math.random() - 0.5) * 10
+            }
+            await this.gotoWithTimeout(retryTarget)
+          }
           if (cand.chunk) {
             this.visited.add(`${cand.chunk.tx}:${cand.chunk.tz}`)
           }
