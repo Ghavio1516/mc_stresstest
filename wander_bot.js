@@ -33,7 +33,7 @@ const DIRECTIONS = [
 const SECTOR_COUNT = 8  // Number of sectors around spawn
 const SECTOR_ANGLE = (Math.PI * 2) / SECTOR_COUNT
 
-const ENABLE_CHAT = false
+const ENABLE_CHAT = true   // Enable chat reporting for bot activity
 const ENABLE_STATS = true
 const STATS_INTERVAL = 15000
 
@@ -91,9 +91,9 @@ class WanderBot {
       port: this.port,
       username: this.username,
       auth: 'offline',
-      version: '1.21.1',
+      version: '1.21.8',
       viewDistance: 'tiny',
-      chatLengthLimit: 10,
+      chatLengthLimit: 256,
       physicsEnabled: true,
       hideErrors: true,
       checkTimeoutInterval: 120000,
@@ -140,6 +140,10 @@ class WanderBot {
   onHurt() {
     this.bot.pathfinder.setGoal(null)
     this.isStuck = false
+    const p = this.bot.entity.position
+    const msg = `[${this.username}] Hit! Canceling pathfinding at (${p.x.toFixed(0)}, ${p.z.toFixed(0)})`
+    console.log(msg)
+    if (ENABLE_CHAT) this.bot.chat(msg)
   }
 
   cleanup() {
@@ -334,20 +338,28 @@ class WanderBot {
         }
       }
 
+      const onPathStop = () => {
+        // Path stopped without reaching goal — bot may be stuck
+        this.isStuck = true
+      }
+
       this.bot.on('goal_reached', onGoalReached)
       this.bot.on('path_update', onPathUpdate)
+      this.bot.on('path_stop', onPathStop)
 
       this.bot.pathfinder.goto(new GoalNear(pos.x, pos.y, pos.z, GOAL_TOLERANCE))
         .then(() => {
           clearTimeout(timeout)
           this.bot.removeListener('goal_reached', onGoalReached)
           this.bot.removeListener('path_update', onPathUpdate)
+          this.bot.removeListener('path_stop', onPathStop)
           resolve(goalReached && !noPath)
         })
         .catch(() => {
           clearTimeout(timeout)
           this.bot.removeListener('goal_reached', onGoalReached)
           this.bot.removeListener('path_update', onPathUpdate)
+          this.bot.removeListener('path_stop', onPathStop)
           resolve(false)
         })
     })
@@ -389,10 +401,29 @@ class WanderBot {
         // Find frontier and go there
         const cand = this.findFrontierSimple()
         if (cand) {
+          const sectorDeg = ((this.sectorIndex * SECTOR_ANGLE * 180 / Math.PI) % 360).toFixed(0)
+          const chunkInfo = cand.chunk ? `(${cand.chunk.tx}, ${cand.chunk.tz})` : '(random)'
+          const dirName = DIRECTIONS[this.targetIndex].name
+          const nextDist = cand.chunk ? `chunk (${cand.chunk.tx}, ${cand.chunk.tz})` : 'random far target'
+          const msg = `[${this.username}] Sector ${sectorDeg}° (${dirName}) -> heading to ${nextDist}`
+          console.log(msg)
+          if (ENABLE_CHAT) this.bot.chat(msg)
           await this.gotoWithTimeout(cand.target)
           if (cand.chunk) {
             this.visited.add(`${cand.chunk.tx}:${cand.chunk.tz}`)
           }
+        } else {
+          const msg = `[${this.username}] No frontier found, resting`
+          console.log(msg)
+          if (ENABLE_CHAT) this.bot.chat(msg)
+        }
+
+        // Report stuck status and next move via in-game chat
+        if (this.isStuck) {
+          const p = this.bot.entity.position
+          const msg = `[${this.username}] STUCK at (${p.x.toFixed(0)}, ${p.z.toFixed(0)}) — seeking escape`
+          console.log(msg)
+          if (ENABLE_CHAT) this.bot.chat(msg)
         }
 
         // Phase transition check

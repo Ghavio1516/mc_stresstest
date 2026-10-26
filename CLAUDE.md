@@ -45,6 +45,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Uses `mineflayer-pathfinder` to pick random targets within a radius, walk toward them, and thereby force chunk loading.
 - Spawn delay between bots is handled by the orchestrator (default 6 seconds in sequential mode) to avoid login throttling.
 - On disconnect, writes a JSON file containing distance walked, unique chunks visited, and timestamps.
+- **Chat reporting** (`ENABLE_CHAT`): when true, bots send in-game chat messages about their sector direction, current target chunk, stuck status, and escape actions. Also reports when hit (`entityHurt` cancels pathfinding).
+- **Event-based pathfinding**: uses `bot.pathfinder.goto()` with `goal_reached`, `path_update`, and `path_stop` events instead of polling `isMoving()`.
+- **Sector-based exploration**: each bot gets a unique sector (360° / SECTOR_COUNT), frontier search prioritizes chunks in the bot's own sector to avoid clustering.
+- **Stuck detection & escape**: tracks position delta over time; when stuck, cancels current goal and moves to a random nearby escape target.
 
 ### Configuration Notes
 
